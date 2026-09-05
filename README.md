@@ -77,6 +77,37 @@ written under `work/my-paper/`.
 
 Override the model with `--model`; the default is in `config/defaults.toml`.
 
+## Using it as a Claude Code skill
+
+The repository ships a skill at `.claude/skills/robusto/`, which Claude Code
+picks up automatically when you work inside this repo. To reach it from any
+directory, install it for your user:
+
+```bash
+mkdir -p ~/.claude/skills
+cp -r .claude/skills/robusto ~/.claude/skills/
+```
+
+Then ask for a review from anywhere: *"review inputs/my-paper.pdf with
+robusto"*, or just *"referee this paper"* with a PDF to hand.
+
+The skill is a thin wrapper, so **the clone still has to exist** with its
+virtual environment set up; the skill finds it rather than replacing it. It
+looks in `$ROBUSTO_HOME` first, then `~/Documents/GitHub/robusto`,
+`~/GitHub/robusto`, `~/code/robusto`, `~/src/robusto`, `~/robusto`, and finally
+the working directory. If your clone lives somewhere else, set the variable:
+
+```bash
+export ROBUSTO_HOME="/path/to/robusto"     # add to ~/.bashrc or ~/.zshrc
+```
+
+```powershell
+[Environment]::SetEnvironmentVariable('ROBUSTO_HOME', 'C:/path/to/robusto', 'User')
+```
+
+Reports are written inside the repo, at `outputs/<paper_id>/report.md`, not in
+whatever directory you were standing in.
+
 ## How the port works, and what it costs
 
 Upstream invokes Codex as:
