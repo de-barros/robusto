@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from claude_backend import probe_authentication  # noqa: E402
+from claude_backend import billing_route_warning, probe_authentication  # noqa: E402
 
 
 REQUIRED_MODULES = [
@@ -75,6 +75,14 @@ def main() -> int:
         hint = probe_authentication()
         if hint:
             failures.append(hint)
+
+    # Not a failure: a gateway is a legitimate choice. But it decides which
+    # account pays for the run, so it is never left implicit.
+    route = billing_route_warning()
+    if route:
+        print(f"[warn] {route}", file=sys.stderr)
+    else:
+        print("[check] model calls will use your Claude Code subscription.")
 
     if failures:
         for failure in failures:

@@ -17,6 +17,7 @@ from pipeline_paths import paper_run_paths
 from render_prompts import render_template
 from claude_backend import (
     auth_failure_hint,
+    billing_route_warning,
     claude_exec_command,
     finalize_structured_output,
     retry_prompt,
@@ -1003,6 +1004,9 @@ def main() -> int:
     print(f"[mode] {input_mode}")
     print(f"[input] {pdf_path}")
     print(f"[model] {effective_model or 'Claude Code default'}")
+    _route = billing_route_warning()
+    if _route:
+        print(f"[warn] {_route}")
     print(f"[reasoning] preflight={args.preflight_reasoning_effort}, selector={args.selector_reasoning_effort}, reviewers/editor=n/a")
 
     if not args.resume_after_preflight:

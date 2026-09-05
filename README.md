@@ -72,6 +72,31 @@ expired token otherwise surfaces only after the deterministic parse has run and
 the first reviewer has been launched. Pass `--offline` to skip the probe and
 check presence only, which is what CI wants.
 
+### Finding the CLI
+
+The binary is looked for in three places, in order: the `ROBUSTO_CLAUDE_BIN`
+environment variable, `PATH`, then the directories the official installers use
+(`~/.local/bin`, `~/.claude/local`, `%APPDATA%/npm`, `/usr/local/bin`,
+`/opt/homebrew/bin`). PATH is not a reliable proxy for installation: the native
+Windows installer writes `claude.exe` to `~/.local/bin` and leaves the persisted
+user PATH alone, which made a perfectly working install look absent. Set
+`ROBUSTO_CLAUDE_BIN` to a full path when several are installed.
+
+### Which account pays
+
+Reviewers run as separate `claude -p` processes and inherit the environment of
+whatever launched the pipeline. If that environment sets `ANTHROPIC_BASE_URL`,
+`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_CUSTOM_HEADERS`,
+`CLAUDE_CODE_USE_BEDROCK` or `CLAUDE_CODE_USE_VERTEX`, then every call in the
+panel bills to that endpoint rather than to your Claude subscription. A gateway
+configured for interactive use captures the whole run silently.
+
+`check_environment.py` and the run header both name any such variable they find.
+Neither treats it as an error, since routing through a gateway is a legitimate
+choice; the point is that a twenty-call run should never be ambiguous about
+which account it is spending from. Note that Claude Code reads these from
+`~/.claude/settings.json` at launch as well as from the shell.
+
 ## Three ways in
 
 Exactly one of these is required.

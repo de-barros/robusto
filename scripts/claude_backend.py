@@ -24,11 +24,28 @@ reviewer surfaces as a failed run rather than as a silently malformed report.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 from pathlib import Path
 
 CLAUDE_CANDIDATES = ("claude.cmd", "claude.exe", "claude")
+
+#: Directories the official installers write to, searched when PATH does not
+#: carry the CLI. The native installer drops the binary in ~/.local/bin without
+#: necessarily adding that directory to the persisted shell PATH, so
+#: `shutil.which` alone reports "not installed" for a working install.
+CLAUDE_FALLBACK_DIRS = (
+    "~/.local/bin",
+    "~/.claude/local",
+    "~/AppData/Roaming/npm",
+    "/usr/local/bin",
+    "/opt/homebrew/bin",
+)
+
+#: Point this at a specific binary when several are installed, or when the CLI
+#: lives somewhere none of the above cover.
+CLAUDE_BIN_ENV = "ROBUSTO_CLAUDE_BIN"
 
 #: Tools a reviewer may use. The pipeline is deliberately read-only: reviewers
 #: reason over already-parsed artifacts and must not edit the repository.
@@ -72,14 +89,39 @@ class BackendUnavailable(RuntimeError):
 
 
 def claude_command() -> str:
-    """Absolute path to the Claude Code CLI, or raise."""
+    """Absolute path to the Claude Code CLI, or raise.
+
+    Three places, in order: the ``ROBUSTO_CLAUDE_BIN`` override, PATH, then the
+    directories the official installers use. The last matters because PATH is
+    not a reliable proxy for installation. On Windows the native installer
+    writes ``claude.exe`` to ``~/.local/bin`` and leaves the persisted user PATH
+    alone, so a PATH-only lookup calls a working install missing.
+    """
+    override = os.environ.get(CLAUDE_BIN_ENV)
+    if override:
+        path = Path(override).expanduser()
+        if path.is_file():
+            return str(path)
+        raise BackendUnavailable(
+            f"{CLAUDE_BIN_ENV} is set to {override}, which is not a file."
+        )
+
     for candidate in CLAUDE_CANDIDATES:
         resolved = shutil.which(candidate)
         if resolved:
             return resolved
+
+    for directory in CLAUDE_FALLBACK_DIRS:
+        base = Path(directory).expanduser()
+        for candidate in CLAUDE_CANDIDATES:
+            path = base / candidate
+            if path.is_file():
+                return str(path)
+
     raise BackendUnavailable(
-        "Could not find the Claude Code CLI on PATH. Install it "
-        "(https://claude.com/claude-code) or add `claude` to PATH."
+        "Could not find the Claude Code CLI on PATH or in the usual install "
+        "directories. Install it (https://claude.com/claude-code), or set "
+        f"{CLAUDE_BIN_ENV} to the full path of the binary."
     )
 
 
@@ -198,6 +240,35 @@ AUTH_SIGNATURES = (
     "not logged in",
     "please run /login",
 )
+
+
+#: Environment variables that redirect the CLI away from the subscription login.
+#: These matter more here than in an interactive session: reviewers run as
+#: separate `claude -p` processes and inherit this environment, so a gateway
+#: configured for interactive use silently captures the whole panel as well. A
+#: full run is twenty-odd model calls, so the time to say this is before the
+#: run, not on the invoice.
+GATEWAY_ENV_VARS = (
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+)
+
+
+def billing_route_warning() -> str | None:
+    """Name the variables diverting model calls off the subscription, if any."""
+    present = [name for name in GATEWAY_ENV_VARS if os.environ.get(name)]
+    if not present:
+        return None
+    return (
+        "Model calls are routed away from your Claude subscription by "
+        + ", ".join(present)
+        + ". Every reviewer in the panel will bill to that endpoint instead. "
+        "Unset them to use the subscription."
+    )
 
 
 def auth_failure_hint(text: str | None) -> str | None:

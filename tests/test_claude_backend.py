@@ -9,6 +9,7 @@ output that does not validate.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -17,8 +18,12 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
+import claude_backend  # noqa: E402
 from claude_backend import (  # noqa: E402
+    BackendUnavailable,
     auth_failure_hint,
+    billing_route_warning,
+    claude_command,
     claude_exec_command,
     extract_json_object,
     finalize_structured_output,
@@ -145,6 +150,103 @@ class AuthDiagnosis(unittest.TestCase):
         self.assertIsNone(auth_failure_hint("The paper reports 401 students in the sample."))
         self.assertIsNone(auth_failure_hint(""))
         self.assertIsNone(auth_failure_hint(None))
+
+
+class CliResolution(unittest.TestCase):
+    """Finding the CLI.
+
+    PATH is not a proxy for installation: the native Windows installer writes
+    the binary to ~/.local/bin and leaves the persisted user PATH alone, which
+    made a working install look absent.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.installed = self.dir / "claude.exe"
+        self.installed.write_text("", encoding="utf-8")
+        patcher = mock.patch.dict(os.environ, {}, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop("ROBUSTO_CLAUDE_BIN", None)
+
+    def test_path_is_used_when_it_carries_the_cli(self) -> None:
+        with mock.patch("shutil.which", return_value="/usr/bin/claude"):
+            self.assertEqual(claude_command(), "/usr/bin/claude")
+
+    def test_falls_back_to_a_known_install_directory(self) -> None:
+        with mock.patch("shutil.which", return_value=None), mock.patch.object(
+            claude_backend, "CLAUDE_FALLBACK_DIRS", (str(self.dir),)
+        ):
+            self.assertEqual(claude_command(), str(self.installed))
+
+    def test_override_wins_over_path(self) -> None:
+        os.environ["ROBUSTO_CLAUDE_BIN"] = str(self.installed)
+        with mock.patch("shutil.which", return_value="/usr/bin/claude"):
+            self.assertEqual(claude_command(), str(self.installed))
+
+    def test_override_pointing_nowhere_says_so(self) -> None:
+        os.environ["ROBUSTO_CLAUDE_BIN"] = str(self.dir / "absent.exe")
+        with self.assertRaises(BackendUnavailable) as caught:
+            claude_command()
+        self.assertIn("ROBUSTO_CLAUDE_BIN", str(caught.exception))
+
+    def test_absent_everywhere_gives_actionable_advice(self) -> None:
+        with mock.patch("shutil.which", return_value=None), mock.patch.object(
+            claude_backend, "CLAUDE_FALLBACK_DIRS", (str(self.dir / "empty"),)
+        ):
+            with self.assertRaises(BackendUnavailable) as caught:
+                claude_command()
+        message = str(caught.exception)
+        self.assertIn("ROBUSTO_CLAUDE_BIN", message)
+        self.assertIn("claude.com/claude-code", message)
+
+
+class BillingRoute(unittest.TestCase):
+    """Which account pays for the panel.
+
+    Reviewers are separate `claude -p` processes that inherit this environment,
+    so a gateway set up for interactive work silently captures a twenty-call
+    run as well.
+    """
+
+    def _env(self, **overrides):
+        base = {name: "" for name in claude_backend.GATEWAY_ENV_VARS}
+        base.update(overrides)
+        return mock.patch.dict(os.environ, base, clear=False)
+
+    def test_clean_environment_is_silent(self) -> None:
+        with self._env():
+            for name in claude_backend.GATEWAY_ENV_VARS:
+                os.environ.pop(name, None)
+            self.assertIsNone(billing_route_warning())
+
+    def test_a_gateway_base_url_is_named(self) -> None:
+        with self._env(ANTHROPIC_BASE_URL="https://api.portkey.ai"):
+            warning = billing_route_warning()
+        self.assertIsNotNone(warning)
+        self.assertIn("ANTHROPIC_BASE_URL", warning)
+        self.assertIn("subscription", warning)
+
+    def test_every_variable_present_is_listed(self) -> None:
+        with self._env(
+            ANTHROPIC_BASE_URL="https://api.portkey.ai",
+            ANTHROPIC_AUTH_TOKEN="secret",
+            CLAUDE_CODE_USE_BEDROCK="1",
+        ):
+            warning = billing_route_warning()
+        for name in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK"):
+            self.assertIn(name, warning)
+
+    def test_the_token_value_is_never_echoed(self) -> None:
+        with self._env(ANTHROPIC_AUTH_TOKEN="sk-super-secret-value"):
+            warning = billing_route_warning()
+        self.assertNotIn("sk-super-secret-value", warning)
+
+    def test_empty_values_do_not_count_as_set(self) -> None:
+        with self._env(ANTHROPIC_BASE_URL=""):
+            self.assertIsNone(billing_route_warning())
 
 
 class CommandConstruction(unittest.TestCase):
