@@ -41,6 +41,9 @@ from pipeline_paths import paper_run_paths  # noqa: E402
 
 COMMENT = re.compile(r"(?<!\\)%.*$", re.M)
 INPUT = re.compile(r"\\(?:input|include)\{([^}]+)\}")
+# \InputIfFileExists{file}{then}{else} takes three groups; the trailing two must
+# be consumed or their braces leak into the flattened text.
+INPUT_IF = re.compile(r"\\InputIfFileExists\{([^}]+)\}")
 SECTION = re.compile(r"\\(sub)*section\*?\{([^}]*)\}")
 CITE = re.compile(r"\\cite[a-zA-Z]*\*?(?:\[[^]]*\])*\{([^}]*)\}")
 REF = re.compile(r"\\(?:eq|page|name|c)?ref\*?\{([^}]*)\}")
@@ -85,10 +88,25 @@ def match_group(text: str, start: int) -> int:
     return len(text)
 
 
-def flatten(root: Path, seen: set[Path] | None = None) -> tuple[str, list[dict]]:
-    """Expand \\input and \\include recursively, recording provenance."""
+def flatten(
+    root: Path, seen: set[Path] | None = None, base: Path | None = None
+) -> tuple[str, list[dict]]:
+    """Expand \\input, \\include and \\InputIfFileExists recursively.
+
+    LaTeX resolves an input path against the directory of the **main document**,
+    not against the file doing the including. A section living in
+    `paper/appendices/` that says `\\input{tables/foo}` means
+    `paper/tables/foo.tex`. Resolving against the including file instead loses
+    every such file silently, which for a repository-generated manuscript is
+    most of the tables.
+
+    `base` carries the main document's directory down the recursion. The
+    including file's own directory stays as a fallback, since some projects rely
+    on that habit and TEXINPUTS makes both arrangements compile.
+    """
     seen = seen if seen is not None else set()
     root = root.resolve()
+    base = (base or root.parent).resolve()
     if root in seen:
         return "", []
     seen.add(root)
@@ -96,22 +114,40 @@ def flatten(root: Path, seen: set[Path] | None = None) -> tuple[str, list[dict]]
     provenance = [{"file": root.name, "path": str(root)}]
 
     def resolve(target: str) -> Path | None:
-        for candidate in (root.parent / target, root.parent / f"{target}.tex"):
-            if candidate.exists():
-                return candidate
+        for directory in (base, root.parent):
+            for candidate in (directory / target, directory / f"{target}.tex"):
+                if candidate.is_file():
+                    return candidate
         return None
 
-    out, cursor = [], 0
-    for match in INPUT.finditer(text):
-        out.append(text[cursor : match.start()])
-        target = resolve(match.group(1))
+    def inline(target_name: str) -> tuple[str, list[dict]]:
+        target = resolve(target_name)
         if target is None:
-            out.append(f"\n%% MISSING INPUT: {match.group(1)}\n")
-        elif target.suffix.lower() in {".tex", ".txt", ""}:
-            inner, inner_prov = flatten(target, seen)
-            out.append(f"\n%% BEGIN {target.name}\n{inner}\n%% END {target.name}\n")
-            provenance.extend(inner_prov)
-        cursor = match.end()
+            return f"\n%% MISSING INPUT: {target_name}\n", []
+        if target.suffix.lower() not in {".tex", ".txt", ""}:
+            return "", []
+        inner, inner_prov = flatten(target, seen, base)
+        return f"\n%% BEGIN {target.name}\n{inner}\n%% END {target.name}\n", inner_prov
+
+    # Both forms in one left-to-right pass, so offsets stay consistent.
+    events = [(m.start(), m.end(), m.group(1), False) for m in INPUT.finditer(text)]
+    events += [(m.start(), m.end(), m.group(1), True) for m in INPUT_IF.finditer(text)]
+    events.sort()
+
+    out, cursor = [], 0
+    for start, end, target_name, conditional in events:
+        if start < cursor:
+            continue
+        out.append(text[cursor:start])
+        body, prov = inline(target_name)
+        out.append(body)
+        provenance.extend(prov)
+        cursor = end
+        if conditional:
+            # Consume the {then} and {else} groups so their braces do not leak.
+            for _ in range(2):
+                if cursor < len(text) and text[cursor] == "{":
+                    cursor = match_group(text, cursor)
     out.append(text[cursor:])
     return "".join(out), provenance
 

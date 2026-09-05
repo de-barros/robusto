@@ -66,6 +66,34 @@ class Flattening(unittest.TestCase):
         self.assertIn("A", text)
         self.assertIn("B", text)
 
+    def test_paths_resolve_from_the_main_document_not_the_including_file(self) -> None:
+        """LaTeX's actual rule. Getting this wrong loses most of a repo's tables."""
+        self.write("tables/lasso.tex", "LASSO TABLE BODY")
+        self.write("appendices/A.tex", "APPENDIX \\input{tables/lasso.tex}")
+        root = self.write("root.tex", "ROOT \\input{appendices/A}")
+        text, provenance = flatten(root)
+        self.assertIn("LASSO TABLE BODY", text)
+        self.assertIn("lasso.tex", [p["file"] for p in provenance])
+
+    def test_including_file_directory_still_works_as_a_fallback(self) -> None:
+        self.write("parts/local.tex", "LOCAL BODY")
+        self.write("parts/section.tex", "SECTION \\input{local}")
+        root = self.write("root.tex", "ROOT \\input{parts/section}")
+        text, _ = flatten(root)
+        self.assertIn("LOCAL BODY", text)
+
+    def test_input_if_file_exists_is_expanded_and_its_branches_consumed(self) -> None:
+        self.write("counts.tex", "COUNTS BODY")
+        root = self.write(
+            "root.tex", "A \\InputIfFileExists{counts.tex}{THEN}{ELSE} B"
+        )
+        text, _ = flatten(root)
+        self.assertIn("COUNTS BODY", text)
+        self.assertIn("A", text)
+        self.assertIn("B", text)
+        for leaked in ("THEN", "ELSE"):
+            self.assertNotIn(leaked, text)
+
     def test_generated_table_snippets_are_pulled_in(self) -> None:
         """The point of source mode: the numbers arrive as text, not glyphs."""
         self.write("table1.txt", "Treatment & 0.90 & (0.07) \\\\")
