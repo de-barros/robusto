@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import shutil
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from claude_backend import probe_authentication  # noqa: E402
 
 
 REQUIRED_MODULES = [
@@ -38,6 +42,16 @@ def missing_paths(root: Path) -> list[str]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Check that the pipeline can run.")
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help=(
+            "Skip the live authentication probe. Checks presence only, which is "
+            "what CI wants and what a human almost never does."
+        ),
+    )
+    args = parser.parse_args()
     root = repo_root()
     failures: list[str] = []
 
@@ -49,8 +63,18 @@ def main() -> int:
     if paths:
         failures.append("Missing project files: " + ", ".join(paths))
 
-    if all(shutil.which(name) is None for name in ("claude", "claude.cmd", "claude.exe")):
+    cli_present = any(
+        shutil.which(name) is not None for name in ("claude", "claude.cmd", "claude.exe")
+    )
+    if not cli_present:
         failures.append("Claude Code CLI was not found on PATH")
+    elif not args.offline:
+        # Presence is not readiness. An expired token passes every static check
+        # and then kills the first reviewer, after the parse has already run.
+        print("[check] probing the Claude Code CLI for a valid session ...")
+        hint = probe_authentication()
+        if hint:
+            failures.append(hint)
 
     if failures:
         for failure in failures:

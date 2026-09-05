@@ -66,6 +66,12 @@ python scripts/check_environment.py
 You need Python 3.12+, the [Claude Code CLI](https://claude.com/claude-code)
 installed and authenticated, and web search available to it.
 
+`check_environment.py` makes one small model call to confirm the CLI can
+actually authenticate. Presence on PATH does not imply a valid session, and an
+expired token otherwise surfaces only after the deterministic parse has run and
+the first reviewer has been launched. Pass `--offline` to skip the probe and
+check presence only, which is what CI wants.
+
 ## Three ways in
 
 Exactly one of these is required.
@@ -174,14 +180,20 @@ something it does not mean.
 
 ## Status
 
-The port is covered by 134 passing unit tests, including the upstream suite and
-new tests for the schema-contract layer.
+The port is covered by 154 passing unit tests: the upstream suite, plus new
+coverage of the schema-contract layer, the LaTeX source front-end, and the
+authentication diagnosis.
 
-**An end-to-end review has not been run in this repository.** The pipeline
-logic is upstream's and is exercised by its tests, but nobody has yet put a PDF
-through robusto and read the resulting report. Treat the first run as a trial,
-and check `work/<paper_id>/` if a reviewer fails: raw model output is kept
-beside every target file precisely so a failure stays inspectable.
+**No full end-to-end review has completed yet.** A first smoke run got as far
+as the deterministic parse and prompt rendering, both of which worked, then
+stopped at the preflight auditor because the CLI's token had expired. That
+failure is what prompted the authentication probe above. The 21-auditor panel,
+the schema-contract retry and the editor assembly remain unexercised against a
+real paper.
+
+Treat the first successful run as a trial. If a reviewer fails, look in
+`work/<paper_id>/`: raw model output is kept beside every target file precisely
+so a failure stays inspectable.
 
 ## Licence
 

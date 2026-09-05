@@ -16,6 +16,7 @@ from pathlib import Path
 from pipeline_paths import paper_run_paths
 from render_prompts import render_template
 from claude_backend import (
+    auth_failure_hint,
     claude_exec_command,
     finalize_structured_output,
     retry_prompt,
@@ -210,6 +211,13 @@ def run_required(
         timeout_seconds=timeout_seconds,
     )
     if result.returncode != 0:
+        hint = auth_failure_hint(
+            result.stdout_path.read_text(encoding="utf-8", errors="replace")
+            if result.stdout_path.exists()
+            else None
+        )
+        if hint:
+            raise RuntimeError(f"{label} failed. {hint}")
         raise RuntimeError(f"{label} failed with exit code {result.returncode}; see {result.stderr_path}")
     if capture_text_to is not None:
         # The editor returns markdown, not JSON; stdout is the report.
@@ -314,7 +322,17 @@ def wait_reviewer(
     if returncode == 0:
         print(f"[ok] {reviewer.name}")
     else:
-        print(f"[fail] {reviewer.name} exited {returncode}; see {stderr_path}")
+        # A CLI that cannot authenticate exits before writing anything the schema
+        # layer would see, so the raw capture is the only place the reason lives.
+        hint = None
+        if ctx is not None and ctx["raw_path"].exists():
+            hint = auth_failure_hint(
+                ctx["raw_path"].read_text(encoding="utf-8", errors="replace")
+            )
+        if hint:
+            print(f"[fail] {reviewer.name}: {hint}")
+        else:
+            print(f"[fail] {reviewer.name} exited {returncode}; see {stderr_path}")
     return RunResult(reviewer.name, returncode, stdout_path, stderr_path)
 
 

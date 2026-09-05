@@ -17,6 +17,6 @@ echo "Setup complete."
 echo "Activate with: source .venv/bin/activate"
 echo "Run tests with: python -m unittest"
 
-if ! command -v codex >/dev/null 2>&1; then
-  echo "Warning: Codex CLI was not found on PATH. Install/authenticate Codex before running scripts/review_paper.py." >&2
+if ! command -v claude >/dev/null 2>&1; then
+  echo "Warning: Claude Code CLI was not found on PATH. Install it and run 'claude' once to authenticate before scripts/review_paper.py." >&2
 fi

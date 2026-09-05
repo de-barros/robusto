@@ -179,6 +179,80 @@ def _is_json(text: str) -> bool:
     return True
 
 
+#: Signatures the CLI emits when it is installed but cannot authenticate. Worth
+#: detecting explicitly: the process exits non-zero before writing anything the
+#: schema layer could inspect, so without this the failure reaches the user as
+#: an opaque "reviewer run failed (1)".
+#: Every phrase here must be specific to authentication. A bare "401" is not:
+#: a manuscript reporting 401 students, or a 401(k), would be diagnosed as a
+#: login failure, so the status code only counts next to an error label.
+AUTH_SIGNATURES = (
+    "oauth access token has expired",
+    "failed to authenticate",
+    "re-authenticate",
+    "invalid api key",
+    "authentication_error",
+    "api error: 401",
+    "error 401",
+    "http 401",
+    "not logged in",
+    "please run /login",
+)
+
+
+def auth_failure_hint(text: str | None) -> str | None:
+    """Return a readable diagnosis when `text` looks like an auth failure."""
+    if not text:
+        return None
+    lowered = text.lower()
+    if not any(signature in lowered for signature in AUTH_SIGNATURES):
+        return None
+    first = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    return (
+        "The Claude Code CLI is installed but not authenticated. "
+        f"It reported: {first[:160]} "
+        "Run `claude` once interactively and complete the login, then retry."
+    )
+
+
+def probe_authentication(timeout_seconds: float = 60.0) -> str | None:
+    """Ask the CLI for one token. Returns a hint on failure, None when healthy.
+
+    Presence on PATH says nothing about whether a token is still valid, and an
+    expired one is otherwise discovered only after the deterministic parse has
+    run and the first reviewer has been launched.
+    """
+    import subprocess
+
+    try:
+        command = claude_exec_command()
+    except BackendUnavailable as exc:
+        return str(exc)
+    try:
+        completed = subprocess.run(
+            command,
+            input="Reply with the single character: k",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        return f"The Claude Code CLI did not respond within {timeout_seconds:.0f}s."
+    except OSError as exc:
+        return f"Could not run the Claude Code CLI: {exc}"
+
+    combined = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+    hint = auth_failure_hint(combined)
+    if hint:
+        return hint
+    if completed.returncode != 0:
+        first = next((l.strip() for l in combined.splitlines() if l.strip()), "")
+        return f"The Claude Code CLI exited {completed.returncode}: {first[:160]}"
+    return None
+
+
 def schema_errors(payload: dict, schema_path: Path) -> list[str]:
     """Validate against the schema file, returning readable messages."""
     from jsonschema import Draft202012Validator

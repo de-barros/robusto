@@ -18,6 +18,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from claude_backend import (  # noqa: E402
+    auth_failure_hint,
     claude_exec_command,
     extract_json_object,
     finalize_structured_output,
@@ -122,6 +123,28 @@ class SchemaHandling(unittest.TestCase):
         )
         self.assertFalse(ok)
         self.assertIn("no output captured", errors[0])
+
+
+class AuthDiagnosis(unittest.TestCase):
+    """The failure that wasted the first real run: installed but not logged in."""
+
+    def test_expired_oauth_token_is_recognised(self) -> None:
+        raw = ("Failed to authenticate. API Error: 401 OAuth access token has "
+               "expired. Re-authenticate to continue.")
+        hint = auth_failure_hint(raw)
+        self.assertIsNotNone(hint)
+        self.assertIn("not authenticated", hint)
+        self.assertIn("claude", hint)
+
+    def test_other_auth_phrasings_are_recognised(self) -> None:
+        for raw in ("Invalid API key provided", "authentication_error", "Please run /login"):
+            self.assertIsNotNone(auth_failure_hint(raw), raw)
+
+    def test_ordinary_output_is_not_mistaken_for_an_auth_failure(self) -> None:
+        self.assertIsNone(auth_failure_hint('{"reviewer": "numerical", "findings": []}'))
+        self.assertIsNone(auth_failure_hint("The paper reports 401 students in the sample."))
+        self.assertIsNone(auth_failure_hint(""))
+        self.assertIsNone(auth_failure_hint(None))
 
 
 class CommandConstruction(unittest.TestCase):
