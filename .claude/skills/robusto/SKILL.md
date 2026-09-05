@@ -36,8 +36,9 @@ repo's, so pass an absolute path when the PDF sits outside `inputs/`.
 
 Confirm three things, and stop if any fails.
 
-1. **The PDF exists.** A bare filename means `<repo>/inputs/<name>`. Any other
-   path is resolved from the user's working directory and passed absolute.
+1. **The input exists.** A bare filename means `<repo>/inputs/<name>`. Any
+   other path is resolved from the user's working directory and passed
+   absolute. For `--source` and `--build` this is a .tex root, not a PDF.
 2. **Disclosure permits it.** Parsed manuscript text goes to Anthropic, and
    search-enabled auditors send derived queries to web search. If the paper is
    confidential, unpublished under embargo, or covered by a data agreement that
@@ -47,12 +48,32 @@ Confirm three things, and stop if any fails.
    the repo. It checks the Claude Code CLI and the Python dependencies. If the
    repo has a `.venv`, use its interpreter rather than the system one.
 
-## Running it
+## Choosing a mode
+
+Three inputs, exactly one required. Ask which the user wants if it is not
+obvious, because they answer different questions.
 
 ```bash
 cd "$ROBUSTO_REPO"
-python scripts/review_paper.py --pdf "/absolute/path/to/paper.pdf"
+python scripts/review_paper.py --pdf    "/abs/path/paper.pdf"       # a finished PDF
+python scripts/review_paper.py --build  "/abs/path/manuscript.tex"  # typeset, then review
+python scripts/review_paper.py --source "/abs/path/manuscript.tex"  # review the source
 ```
+
+**`--source` when the manuscript lives in a repository.** Numbers, cross
+references, citations and table bodies come through exactly, because the
+generated snippets and the bibliography are read directly rather than
+recovered from glyphs. It cannot see layout, so a table overrunning its page
+or a figure label below a journal's point floor will not be found.
+
+**`--build` before submitting.** It compiles with latexmk and reviews the
+result, which is what the referee receives. Needs latexmk on PATH.
+
+**`--pdf` when that is all there is**, or when reviewing someone else's paper.
+
+If the user asks for a repository manuscript without saying which, prefer
+`--source` for a substantive check and say plainly that layout is not covered;
+suggest `--build` as a second pass when submission is close.
 
 Add `--paper-id <id>` when the filename is not the identifier you want.
 Add `--model <id>` to override `config/defaults.toml`.
@@ -68,7 +89,8 @@ All paths are inside the repo, not the user's working directory.
 - `work/<paper_id>/reviews/` — one JSON file per auditor
 - `work/<paper_id>/reviews/*.raw.txt` — raw model output, kept for inspection
 - `work/<paper_id>/logs/` — stdout and stderr per stage
-- `work/<paper_id>/parsed/` — the deterministic parse
+- `work/<paper_id>/parsed/` — the deterministic parse; `manifest.json` there
+  records the mode, and in source mode lists what that mode cannot see
 
 Give the user an absolute path to the report; a bare `outputs/...` will not
 resolve from where they are standing.

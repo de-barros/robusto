@@ -12,8 +12,9 @@ See [NOTICE](NOTICE) for what came from where.
 
 For each paper:
 
-1. parses the PDF locally into source-faithful text, coordinates, page images,
-   tables, figures, citations and cross-references
+1. builds source-faithful artifacts from the manuscript: text, tables,
+   figures, citations and cross-references, plus coordinates and page images
+   when working from a PDF
 2. runs a parser-quality preflight before any substantive review
 3. selects every reviewer whose remit is plausibly relevant, falling back to
    the full roster when applicability is uncertain
@@ -65,15 +66,47 @@ python scripts/check_environment.py
 You need Python 3.12+, the [Claude Code CLI](https://claude.com/claude-code)
 installed and authenticated, and web search available to it.
 
-Put a PDF in `inputs/` (git-ignored), then:
+## Three ways in
+
+Exactly one of these is required.
 
 ```bash
+# 1. a finished PDF
 python scripts/review_paper.py --pdf "inputs/my-paper.pdf"
+
+# 2. compile the manuscript first, then review what comes out
+python scripts/review_paper.py --build "path/to/manuscript.tex"
+
+# 3. review the LaTeX source directly, without typesetting
+python scripts/review_paper.py --source "path/to/manuscript.tex"
 ```
 
-The report lands at `outputs/my-paper/report.md`. Intermediate artifacts,
+They are not interchangeable, and the difference is not convenience.
+
+| | `--pdf` / `--build` | `--source` |
+|---|---|---|
+| numbers | recovered from rendered glyphs | exact, from the generated snippets |
+| cross-references | inferred from "Table 3" in the text | exact, from the label and reference commands |
+| citations | parsed from rendered markers | exact, the keys themselves |
+| reference list | parsed from the typeset bibliography | exact, from the .bib |
+| table bodies | reconstructed from layout | the snippet, verbatim |
+| **layout, overflow, page budget** | **visible** | **invisible** |
+| **figure legibility after reduction** | **visible** | **invisible** |
+| page numbers in findings | present | null; findings anchor on section and quoted text |
+
+Use `--source` when the manuscript lives in a repository and you care about
+whether the numbers, references and claims hang together. Use `--build` before
+submitting, when you care about what the referee actually receives: a table
+running off the page or axis labels below a journal's point floor exist only
+after typesetting, and source mode cannot see them.
+
+`--build` needs `latexmk` on PATH. `--source` takes a root .tex file, or a
+directory containing exactly one file with a documentclass.
+
+The report lands at `outputs/<paper_id>/report.md`. Intermediate artifacts,
 prompts, logs, reviewer outputs, routing decisions and the editor bundle are
-written under `work/my-paper/`.
+written under `work/<paper_id>/`, and `manifest.json` there records which mode
+ran, with source mode listing its own limitations explicitly.
 
 Override the model with `--model`; the default is in `config/defaults.toml`.
 

@@ -65,6 +65,37 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def compile_latex(root: Path) -> Path:
+    """Typeset a LaTeX root with latexmk and return the PDF it produced.
+
+    Used by --build, whose point is to review the article as the referee
+    receives it. Layout problems, figure legibility and the page budget exist
+    only after typesetting, so they are invisible to --source.
+    """
+    if shutil.which("latexmk") is None:
+        raise FileNotFoundError(
+            "latexmk was not found on PATH. Install a TeX distribution, or "
+            "compile the PDF yourself and pass it with --pdf."
+        )
+    print(f"[build] latexmk {root.name}")
+    completed = subprocess.run(
+        ["latexmk", "-pdf", "-interaction=nonstopmode", "-halt-on-error", root.name],
+        cwd=root.parent,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    produced = root.with_suffix(".pdf")
+    if completed.returncode != 0 or not produced.exists():
+        tail = "\n".join((completed.stdout or "").strip().splitlines()[-25:])
+        raise RuntimeError(
+            f"latexmk failed for {root.name} (exit {completed.returncode}).\n{tail}"
+        )
+    print(f"[build] produced {produced.name}")
+    return produced
+
+
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -761,8 +792,25 @@ def main() -> int:
         if callable(reconfigure):
             reconfigure(line_buffering=True)
     parser = argparse.ArgumentParser(description="Run the full paper-review pipeline for one PDF.")
-    parser.add_argument("--pdf", required=True, help="Path to source PDF, usually under inputs/")
-    parser.add_argument("--paper-id", default=None, help="Optional paper id; defaults to the PDF filename stem")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--pdf", help="Review a compiled PDF, usually under inputs/.")
+    source.add_argument(
+        "--build",
+        help=(
+            "Compile a LaTeX root with latexmk, then review the PDF it produces. "
+            "Use when the manuscript lives in a repository and you want what the "
+            "referee will actually receive, including layout and page budget."
+        ),
+    )
+    source.add_argument(
+        "--source",
+        help=(
+            "Review LaTeX source directly, without typesetting. Numbers, "
+            "cross-references, citations and table bodies come through exactly "
+            "rather than being recovered from glyphs. Cannot see layout."
+        ),
+    )
+    parser.add_argument("--paper-id", default=None, help="Optional paper id; defaults to the input filename stem")
     parser.add_argument(
         "--keep-going",
         action="store_true",
@@ -832,14 +880,22 @@ def main() -> int:
         raise ValueError("agent timeouts must be greater than zero")
 
     repo = repo_root()
-    pdf_path = Path(args.pdf)
+    input_mode = "pdf" if args.pdf else ("build" if args.build else "source")
+    pdf_path = Path(args.pdf or args.build or args.source)
     if not pdf_path.is_absolute():
         pdf_path = repo / pdf_path
     pdf_path = pdf_path.resolve()
-    if not pdf_path.exists():
-        raise FileNotFoundError(f"PDF not found: {pdf_path}")
-    if pdf_path.suffix.lower() != ".pdf":
-        raise ValueError(f"Expected a PDF file, got: {pdf_path.name}")
+
+    if input_mode == "build":
+        pdf_path = compile_latex(pdf_path)
+
+    if input_mode in {"pdf", "build"}:
+        if not pdf_path.exists():
+            raise FileNotFoundError(f"PDF not found: {pdf_path}")
+        if pdf_path.suffix.lower() != ".pdf":
+            raise ValueError(f"Expected a PDF file, got: {pdf_path.name}")
+    elif not pdf_path.exists():
+        raise FileNotFoundError(f"LaTeX source not found: {pdf_path}")
 
     paper_id = slugify(args.paper_id or pdf_path.stem)
     paths = paper_run_paths(repo, paper_id)
@@ -926,7 +982,8 @@ def main() -> int:
     outputs_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"[paper] {paper_id}")
-    print(f"[pdf] {pdf_path}")
+    print(f"[mode] {input_mode}")
+    print(f"[input] {pdf_path}")
     print(f"[model] {effective_model or 'Claude Code default'}")
     print(f"[reasoning] preflight={args.preflight_reasoning_effort}, selector={args.selector_reasoning_effort}, reviewers/editor=n/a")
 
@@ -935,8 +992,9 @@ def main() -> int:
             "preprocess",
             [
                 sys.executable,
-                "scripts/preprocess_pdf.py",
-                "--pdf",
+                "scripts/preprocess_pdf.py" if input_mode in {"pdf", "build"}
+                else "scripts/preprocess_source.py",
+                "--pdf" if input_mode in {"pdf", "build"} else "--source",
                 str(pdf_path),
                 "--paper-id",
                 paper_id,
