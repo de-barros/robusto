@@ -1,0 +1,9 @@
+# Defaults for a robusto run. Override any of these on the command line.
+#
+# Replaces upstream's .codex/config.toml. Claude Code has no reasoning-effort
+# control, so that key is deliberately absent rather than carried over as a
+# setting that would silently do nothing.
+
+# Model used by the reviewer panel, the selector, and the editor.
+# Any model id the Claude Code CLI accepts is valid.
+model = "claude-opus-5"

@@ -1,0 +1,41 @@
+Act as the devils_advocate_auditor for this run.
+
+Use the repo guidance and the paper-reviewer workflow.
+
+Build the strongest good-faith case against this manuscript:
+`{parsed_dir}`
+
+Return one JSON object that strictly conforms to:
+`{schema_path}`
+
+For this run:
+- reviewer = "devils_advocate_auditor"
+- paper_id = "{paper_id}"
+- finding IDs must be stable and formatted DEVIL-001, DEVIL-002, ...
+
+Every other reviewer in this panel looks for a specific defect. You do something different: you argue. Your task is the argument a hostile but competent referee would make for rejecting or heavily revising this paper, and the argument an editor would make for declining it without review. A list of small defects is not that argument. Ask what would have to be true for this paper's central claim to be wrong, or uninteresting, or already known, and then say how close the manuscript comes to that.
+
+Focus on:
+- the single most damaging objection to the central claim, stated as a referee would state it
+- whether the headline result could be produced by something other than the mechanism the authors propose, and what in the manuscript rules that out or fails to
+- load-bearing assumptions that are asserted rather than defended, and what breaks if each is false
+- the gap between what the design identifies and what the abstract and conclusion claim
+- results that would be surprising enough to demand more evidence than is offered, judged against what the field already believes
+- whether the contribution survives if the most contested empirical choice is decided the other way
+
+Argue from the manuscript. Every objection must name the passage, table, figure, or specification it attacks, and must say what evidence would answer it. An objection that cannot be answered by any evidence is not a finding; it is a preference, and does not belong here. Do not manufacture doubt: if the paper defends a step well, say so in the summary rather than inventing a weakness.
+
+Do not restate the specialist reviewers' work. Arithmetic, cross-references, citation accuracy, grammar, and parser damage all belong to other reviewers. You may build on such a problem when it carries argumentative weight, but the finding must be the argument it supports, not the defect itself.
+
+For every finding:
+- Set issue_type to manuscript_issue or cannot_verify.
+- Set category to fatal_objection, alternative_explanation, undefended_assumption, claim_exceeds_design, extraordinary_claim, contribution_fragility, or cannot_verify.
+- Set confidence to high, medium, or low, reflecting how likely a competent referee is to raise the objection, not how likely the paper is to be wrong.
+- Set location.precision to exact, partial, or missing.
+- Include source_objects for the passages, tables, figures, or specifications the objection attacks.
+- Include claim_evidence_links when the objection turns on a mismatch between a claim and the evidence offered for it.
+- Use cannot_verify only when the artifacts do not let you judge whether the objection lands, and include cannot_verify_reason.
+
+Rank findings so the objection most likely to sink the paper is first. If the manuscript withstands adversarial reading on its central claim, return run_status ok with an empty findings array and say so plainly in the summary. A clean result here is informative and must not be padded.
+
+Do not include process notes about skill availability, tooling, or session state.

@@ -1,0 +1,86 @@
+robusto — attribution
+=====================
+
+robusto is a derivative of Ingar30/reviewer. Nearly all of the pipeline is
+that project's work, and the parts this repository adds would not be worth
+much without it.
+
+
+Substantially derived from
+--------------------------
+
+  Ingar30/reviewer — https://github.com/Ingar30/reviewer
+  MIT License, Copyright (c) 2026 repository owner
+
+  Carried over essentially unchanged:
+
+    scripts/preprocess_pdf.py          deterministic local PDF parsing
+    scripts/build_editor_input.py      editor bundle assembly
+    scripts/normalize_review_outputs.py  duplicate normalization
+    scripts/validate_review_json.py    schema and semantic validation
+    scripts/select_reviewers.py        applicability routing
+    scripts/check_final_report.py      report smoke checks
+    scripts/reviewer_config.py, pipeline_paths.py, render_prompts.py
+    scripts/evaluate_prior_runs.py, check_shareable_repo.py
+    scripts/check_tracked_sensitive_names.py
+    schemas/                           reviewer output and selection schemas
+    prompts/templates/                 the auditor prompts, less the one noted below
+    config/reviewers.json              the auditor roster, less the one noted below
+    tests/test_reviewer_config.py      the upstream test suite
+    docs/extension_guide.md, docs/first_review_walkthrough.md
+
+  Modified here:
+
+    scripts/review_paper.py            transport switched from Codex to Claude Code
+    scripts/refresh_editor.py          same
+    scripts/check_environment.py       checks for the Claude Code CLI
+    tests/test_reviewer_config.py      transport test rewritten; roster updated
+
+  Added here:
+
+    scripts/claude_backend.py          the Claude Code transport and the schema
+                                       contract that replaces --output-schema
+    tests/test_claude_backend.py       tests for that layer
+    prompts/templates/devils_advocate_audit.txt
+    config/defaults.toml               replaces .codex/config.toml
+    .claude/skills/robusto/SKILL.md    the Claude Code skill
+
+
+Ideas taken, text not taken
+---------------------------
+
+The devil's advocate reviewer is an idea borrowed from the projects below.
+None of their text appears in this repository; the prompt was written from
+scratch for this roster and this schema. Two of the three carry no licence at
+all, so copying from them would not have been permissible, and the fourth is
+CC BY-NC, which would have forced this repository to be non-commercial.
+
+  Imbad0202/academic-research-skills — https://github.com/Imbad0202/academic-research-skills
+  CC BY-NC 4.0, Copyright (c) 2026 Cheng-I Wu
+  Source of the devil's-advocate idea: a panel member whose remit is to argue
+  against the paper rather than to look for a class of defect.
+
+  nikhilklath/skills — https://github.com/nikhilklath/skills
+  No licence stated. Its review-paper skill frames a pre-submission review as
+  prioritised findings across contribution, identification, consistency, math,
+  exhibits and prose. That framing informed how the devil's advocate is asked
+  to rank what it finds.
+
+  scunning1975/MixtapeTools — https://github.com/scunning1975/MixtapeTools
+  No licence stated. Its Referee 2 persona is the source of the stance that a
+  review is an audit that files a report against a checklist, rather than a
+  reaction. Upstream already worked this way; the resemblance is noted because
+  the idea was consulted.
+
+  lcrawfurd/claude-skills — https://github.com/lcrawfurd/claude-skills
+  No licence stated. Consulted for the same persona in a shorter form.
+
+
+What this repository is not
+---------------------------
+
+It is not endorsed by, affiliated with, or reviewed by any of the projects
+above. Defects in robusto are robusto's, not theirs. In particular, the
+schema-contract layer that replaces provider-enforced structured output is new
+here and is the most likely place for this port to behave differently from
+upstream.

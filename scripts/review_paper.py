@@ -1,0 +1,1180 @@
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import shutil
+import subprocess
+import sys
+import time
+import tomllib
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+from pipeline_paths import paper_run_paths
+from render_prompts import render_template
+from claude_backend import (
+    claude_exec_command,
+    finalize_structured_output,
+    retry_prompt,
+    structured_prompt,
+)
+from reviewer_config import ReviewerConfig, load_reviewers_config, write_reviewers_config
+
+
+SELECTOR_TEMPLATE = "reviewer_selection.txt"
+SELECTOR_OUTPUT = "reviewer_selection.json"
+MIN_EDITOR_REPORT_CHARS = 2000
+REASONING_EFFORT_CHOICES = ("none", "low", "medium", "high", "xhigh", "max")
+REVIEWER_SELECTION_MODE = "applicability"
+THEORY_REVIEWER_NAME = "theory_logic_auditor"
+EDITOR_REPORT_REQUIRED_HEADINGS = [
+    "## Executive Summary",
+    "## Highest-Priority Cross-Agent Findings",
+    "## Suggested Revision Priorities",
+    "## Additional Findings",
+]
+EDITOR_REPORT_SCOPE_HEADINGS = (
+    "## Appendix: Review Scope and Limitations",
+    "## Review Configuration",
+)
+
+
+@dataclass
+class RunResult:
+    label: str
+    returncode: int
+    stdout_path: Path
+    stderr_path: Path
+
+
+def slugify(value: str) -> str:
+    value = value.strip().lower()
+    value = re.sub(r"[^a-z0-9]+", "-", value)
+    value = re.sub(r"-+", "-", value).strip("-")
+    return value or "paper"
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def project_defaults(repo: Path) -> dict[str, object]:
+    config_path = repo / "config" / "defaults.toml"
+    if not config_path.exists():
+        return {}
+    with config_path.open("rb") as handle:
+        return tomllib.load(handle)
+
+
+def git_metadata(repo: Path) -> dict[str, object]:
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        dirty = bool(
+            subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+        )
+        return {"commit": commit, "dirty": dirty}
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return {"commit": None, "dirty": None}
+
+
+def write_run_manifest(path: Path, data: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def model_exec_command(
+    *, model: str | None = None, reasoning_effort: str | None = None, search: bool = False
+) -> list[str]:
+    """Headless Claude Code invocation.
+
+    ``reasoning_effort`` is accepted so call sites and CLI flags keep the
+    upstream shape, but Claude Code exposes no equivalent, so it is ignored
+    rather than translated into something it does not mean.
+    """
+    return claude_exec_command(model=model, search=search)
+
+
+def run_command(
+    label: str,
+    command: list[str],
+    cwd: Path,
+    log_dir: Path,
+    input_text: str | None = None,
+    timeout_seconds: float | None = None,
+) -> RunResult:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    safe_label = slugify(label)
+    stdout_path = log_dir / f"{safe_label}.stdout.log"
+    stderr_path = log_dir / f"{safe_label}.stderr.log"
+
+    print(f"[run] {label}")
+    try:
+        completed = subprocess.run(
+            command,
+            input=input_text,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=cwd,
+            capture_output=True,
+            timeout=timeout_seconds,
+        )
+        stdout = completed.stdout
+        stderr = completed.stderr
+        returncode = completed.returncode
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        stderr += f"\nTimed out after {timeout_seconds:.0f} seconds.\n"
+        returncode = 124
+    stdout_path.write_text(stdout, encoding="utf-8")
+    stderr_path.write_text(stderr, encoding="utf-8")
+    if returncode != 0:
+        print(f"[fail] {label} exited {returncode}; see {stderr_path}")
+    else:
+        print(f"[ok] {label}")
+    return RunResult(label, returncode, stdout_path, stderr_path)
+
+
+def run_required(
+    label: str,
+    command: list[str],
+    cwd: Path,
+    log_dir: Path,
+    input_text: str | None = None,
+    timeout_seconds: float | None = None,
+    capture_to: Path | None = None,
+    schema_path: Path | None = None,
+    capture_text_to: Path | None = None,
+) -> RunResult:
+    result = run_command(
+        label,
+        command,
+        cwd,
+        log_dir,
+        input_text=input_text,
+        timeout_seconds=timeout_seconds,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"{label} failed with exit code {result.returncode}; see {result.stderr_path}")
+    if capture_text_to is not None:
+        # The editor returns markdown, not JSON; stdout is the report.
+        capture_text_to.parent.mkdir(parents=True, exist_ok=True)
+        capture_text_to.write_text(
+            result.stdout_path.read_text(encoding="utf-8", errors="replace"), encoding="utf-8"
+        )
+    if capture_to is not None and schema_path is not None:
+        # Stands in for Codex --output-schema plus --output-last-message.
+        ok, errors = finalize_structured_output(result.stdout_path, capture_to, schema_path)
+        if not ok:
+            raise RuntimeError(
+                f"{label} did not return schema-valid JSON: " + "; ".join(errors[:5])
+            )
+    return result
+
+
+def start_reviewer(
+    reviewer: ReviewerConfig,
+    repo: Path,
+    prompts_dir: Path,
+    reviews_dir: Path,
+    schema_path: Path,
+    log_dir: Path,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+) -> tuple[ReviewerConfig, subprocess.Popen[str], Path, Path, float]:
+    prompt_path = prompts_dir / reviewer.prompt
+    output_path = reviews_dir / reviewer.output
+    stdout_path = log_dir / f"{reviewer.name}.stdout.log"
+    stderr_path = log_dir / f"{reviewer.name}.stderr.log"
+    prompt_text = prompt_path.read_text(encoding="utf-8")
+
+    command = model_exec_command(
+        model=model, reasoning_effort=reasoning_effort, search=reviewer.search
+    )
+    # Claude Code has no --output-schema. The schema travels in the prompt and
+    # is enforced after the fact by finalize_structured_output(); raw stdout is
+    # captured beside the target so a failed run stays inspectable.
+    raw_path = output_path.with_suffix(output_path.suffix + ".raw.txt")
+    prompt_text = structured_prompt(prompt_text, schema_path)
+
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    stdout_handle = raw_path.open("w", encoding="utf-8")
+    stderr_handle = stderr_path.open("w", encoding="utf-8")
+    print(f"[start] {reviewer.name}")
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=stdout_handle,
+        stderr=stderr_handle,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=repo,
+    )
+    assert process.stdin is not None
+    process.stdin.write(prompt_text)
+    process.stdin.close()
+    process._reviewer_stdout_handle = stdout_handle  # type: ignore[attr-defined]
+    process._reviewer_stderr_handle = stderr_handle  # type: ignore[attr-defined]
+    process._robusto_retry = {  # type: ignore[attr-defined]
+        "command": command,
+        "prompt_source": prompt_path.read_text(encoding="utf-8"),
+        "schema_path": schema_path,
+        "output_path": output_path,
+        "raw_path": raw_path,
+        "cwd": repo,
+    }
+    return reviewer, process, stdout_path, stderr_path, time.monotonic()
+
+
+def wait_reviewer(
+    reviewer: ReviewerConfig,
+    process: subprocess.Popen[str],
+    stdout_path: Path,
+    stderr_path: Path,
+    started_at: float,
+    timeout_seconds: float | None = None,
+) -> RunResult:
+    remaining = None
+    if timeout_seconds is not None:
+        remaining = max(0.1, timeout_seconds - (time.monotonic() - started_at))
+    try:
+        returncode = process.wait(timeout=remaining)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        returncode = 124
+        with stderr_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"\nTimed out after {timeout_seconds:.0f} seconds.\n")
+    process._reviewer_stdout_handle.close()  # type: ignore[attr-defined]
+    process._reviewer_stderr_handle.close()  # type: ignore[attr-defined]
+    ctx = getattr(process, "_robusto_retry", None)
+    if returncode == 0 and ctx is not None:
+        ok, errors = finalize_structured_output(
+            ctx["raw_path"], ctx["output_path"], ctx["schema_path"]
+        )
+        if not ok:
+            print(f"[retry] {reviewer.name}: {errors[0] if errors else 'invalid output'}")
+            returncode = retry_structured_reviewer(reviewer, ctx, errors, stderr_path)
+    if returncode == 0:
+        print(f"[ok] {reviewer.name}")
+    else:
+        print(f"[fail] {reviewer.name} exited {returncode}; see {stderr_path}")
+    return RunResult(reviewer.name, returncode, stdout_path, stderr_path)
+
+
+def retry_structured_reviewer(
+    reviewer: ReviewerConfig,
+    ctx: dict,
+    errors: list[str],
+    stderr_path: Path,
+) -> int:
+    """Re-ask once, quoting the validation failures.
+
+    Provider-side constrained decoding cannot drift; a prompt contract can,
+    so one bounded retry replaces the guarantee Codex gave for free. A second
+    failure is left to fail loudly rather than retried into a loop.
+    """
+    prompt = retry_prompt(ctx["prompt_source"], ctx["schema_path"], errors)
+    completed = subprocess.run(
+        ctx["command"],
+        input=prompt,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=ctx["cwd"],
+    )
+    ctx["raw_path"].write_text(completed.stdout or "", encoding="utf-8")
+    ok, retry_errors = finalize_structured_output(
+        ctx["raw_path"], ctx["output_path"], ctx["schema_path"]
+    )
+    if ok:
+        return 0
+    with stderr_path.open("a", encoding="utf-8") as handle:
+        handle.write("\nSchema contract not met after one retry:\n")
+        for message in retry_errors[:12]:
+            handle.write(f"  - {message}\n")
+    return 65
+
+
+def require_fresh_file(path: Path, started_at: float, label: str) -> None:
+    if not path.exists():
+        raise FileNotFoundError(f"Missing {label}: {path}")
+    if path.stat().st_mtime < started_at:
+        raise RuntimeError(f"{label} is stale and was not regenerated in this run: {path}")
+
+
+def plausible_editor_report(text: str) -> bool:
+    stripped = text.strip()
+    if len(stripped) < MIN_EDITOR_REPORT_CHARS:
+        return False
+    if not stripped.startswith("# Multi-Agent Paper Review Report"):
+        return False
+    return all(heading in stripped for heading in EDITOR_REPORT_REQUIRED_HEADINGS) and any(
+        heading in stripped for heading in EDITOR_REPORT_SCOPE_HEADINGS
+    )
+
+
+def extract_editor_report_from_transcript(text: str) -> str | None:
+    starts = [match.start() for match in re.finditer(r"(?m)^# Multi-Agent Paper Review Report\s*$", text)]
+    for start in reversed(starts):
+        candidate = text[start:]
+        end_match = re.search(r"(?m)^(?:collab:|tokens used\b)", candidate)
+        if end_match:
+            candidate = candidate[: end_match.start()]
+        candidate = candidate.strip()
+        if plausible_editor_report(candidate):
+            return candidate + "\n"
+    return None
+
+
+def recover_editor_report_if_needed(report_path: Path, editor_stderr_path: Path) -> None:
+    current = report_path.read_text(encoding="utf-8") if report_path.exists() else ""
+    if plausible_editor_report(current):
+        return
+
+    transcript = editor_stderr_path.read_text(encoding="utf-8") if editor_stderr_path.exists() else ""
+    recovered = extract_editor_report_from_transcript(transcript)
+    if recovered is None:
+        raise RuntimeError(
+            f"editor produced an invalid final report and no recoverable report was found in {editor_stderr_path}"
+        )
+    report_path.write_text(recovered, encoding="utf-8")
+    print(f"[recover] final report recovered from editor transcript: {editor_stderr_path}")
+
+
+def validate_reviewer_json(path: Path, expected_reviewer: str, paper_id: str) -> None:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if data.get("reviewer") != expected_reviewer:
+        raise ValueError(f"{path} has reviewer={data.get('reviewer')!r}, expected {expected_reviewer!r}")
+    if data.get("paper_id") != paper_id:
+        raise ValueError(f"{path} has paper_id={data.get('paper_id')!r}, expected {paper_id!r}")
+
+
+def parser_quality_gate_findings(data: dict) -> tuple[list[dict], list[dict]]:
+    blockers = []
+    warnings = []
+    for finding in data.get("findings", []):
+        if finding.get("issue_type") != "parser_artifact":
+            continue
+        severity = finding.get("severity")
+        confidence = finding.get("confidence")
+        if severity == "high" and confidence == "high":
+            blockers.append(finding)
+        elif severity in {"high", "medium"}:
+            warnings.append(finding)
+    return blockers, warnings
+
+
+def finding_label(finding: dict) -> str:
+    finding_id = finding.get("id", "unknown-id")
+    summary = " ".join(str(finding.get("finding_summary", "")).split())
+    if not summary:
+        summary = " ".join(str(finding.get("claim_text", "")).split())
+    return f"{finding_id}: {summary}" if summary else str(finding_id)
+
+
+def enforce_preflight_gate(reviewer: ReviewerConfig, output_path: Path) -> None:
+    if reviewer.name != "parser_quality_auditor":
+        return
+    data = json.loads(output_path.read_text(encoding="utf-8"))
+    blockers, warnings = parser_quality_gate_findings(data)
+    for finding in warnings:
+        print(f"[warn] parser quality: {finding_label(finding)}")
+    if blockers:
+        blocker_text = "; ".join(finding_label(finding) for finding in blockers)
+        raise RuntimeError(f"blocking parser-quality findings: {blocker_text}")
+
+
+def reviewer_catalog(reviewers: list[ReviewerConfig]) -> list[dict[str, object]]:
+    return [
+        {
+            "name": reviewer.name,
+            "id_prefix": reviewer.id_prefix,
+            "prompt": reviewer.prompt,
+            "search": reviewer.search,
+            "normalization_role": reviewer.normalization_role,
+        }
+        for reviewer in reviewers
+    ]
+
+
+def enforce_conservative_applicability(
+    selection: dict, optional_reviewers: list[ReviewerConfig]
+) -> dict:
+    """Expand an uncertain selection and guarantee theory coverage for theory papers."""
+    guarded = {
+        **selection,
+        "selected_optional_reviewers": [
+            dict(item) for item in selection.get("selected_optional_reviewers", [])
+        ],
+        "skipped_optional_reviewers": [
+            dict(item) for item in selection.get("skipped_optional_reviewers", [])
+        ],
+        "notes": list(selection.get("notes", [])),
+    }
+    selected_by_name = {
+        item["name"]: item for item in guarded["selected_optional_reviewers"]
+    }
+    skipped_by_name = {
+        item["name"]: item for item in guarded["skipped_optional_reviewers"]
+    }
+    enabled_optional = [reviewer for reviewer in optional_reviewers if reviewer.enabled]
+    uncertain = (
+        guarded.get("paper_type") in {"mixed", "unknown"}
+        or guarded.get("selection_confidence") != "high"
+    )
+
+    if uncertain:
+        guarded["selected_optional_reviewers"] = [
+            selected_by_name.get(reviewer.name)
+            or {
+                "name": reviewer.name,
+                "reason": (
+                    "Included by the conservative applicability guardrail because the paper "
+                    "type or routing confidence is uncertain."
+                ),
+            }
+            for reviewer in enabled_optional
+        ]
+        guarded["skipped_optional_reviewers"] = []
+        guarded["notes"].append(
+            "The wrapper expanded an uncertain classification to every conditional specialist."
+        )
+        return guarded
+
+    if guarded.get("paper_type") == "theory" and THEORY_REVIEWER_NAME in skipped_by_name:
+        selected_by_name[THEORY_REVIEWER_NAME] = {
+            "name": THEORY_REVIEWER_NAME,
+            "reason": (
+                "Included by the conservative applicability guardrail because a theory paper "
+                "requires a dedicated formal-logic audit."
+            ),
+        }
+        skipped_by_name.pop(THEORY_REVIEWER_NAME)
+        guarded["notes"].append(
+            "The wrapper restored the theory-logic specialist required for a theory paper."
+        )
+    guarded["selected_optional_reviewers"] = [
+        selected_by_name[reviewer.name]
+        for reviewer in enabled_optional
+        if reviewer.name in selected_by_name
+    ]
+    guarded["skipped_optional_reviewers"] = [
+        skipped_by_name[reviewer.name]
+        for reviewer in enabled_optional
+        if reviewer.name in skipped_by_name
+    ]
+    return guarded
+
+
+def render_selector_prompt(
+    repo: Path,
+    paper_id: str,
+    parsed_dir: Path,
+    optional_reviewers: list[ReviewerConfig],
+    selection_schema_path: Path,
+) -> str:
+    template = (repo / "prompts" / "templates" / SELECTOR_TEMPLATE).read_text(encoding="utf-8")
+    catalog = json.dumps(reviewer_catalog(optional_reviewers), indent=2)
+    rendered = render_template(
+        template,
+        {
+            "paper_id": paper_id,
+            "parsed_dir": str(parsed_dir.relative_to(repo)),
+            "selection_schema_path": str(selection_schema_path.relative_to(repo)),
+            "optional_reviewer_catalog": catalog,
+        },
+    )
+    return rendered
+
+
+def run_reviewer_selector(
+    repo: Path,
+    paper_id: str,
+    parsed_dir: Path,
+    optional_reviewers: list[ReviewerConfig],
+    selection_dir: Path,
+    selection_schema_path: Path,
+    log_dir: Path,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+    timeout_seconds: float | None = None,
+) -> tuple[dict, float]:
+    selection_dir.mkdir(parents=True, exist_ok=True)
+    output_path = selection_dir / SELECTOR_OUTPUT
+    prompt_text = render_selector_prompt(
+        repo,
+        paper_id,
+        parsed_dir,
+        optional_reviewers,
+        selection_schema_path,
+    )
+    started_at = time.time() - 1.0
+    run_required(
+        "reviewer-selector",
+        [*model_exec_command(model=model, reasoning_effort=reasoning_effort)],
+        repo,
+        log_dir,
+        input_text=structured_prompt(prompt_text, selection_schema_path),
+        capture_to=output_path,
+        schema_path=selection_schema_path,
+        timeout_seconds=timeout_seconds,
+    )
+    require_fresh_file(output_path, started_at, "reviewer selector output")
+    return json.loads(output_path.read_text(encoding="utf-8")), started_at
+
+
+def validate_selection_output(
+    selection: dict,
+    paper_id: str,
+    mandatory_reviewers: list[ReviewerConfig],
+    optional_reviewers: list[ReviewerConfig],
+) -> list[str]:
+    errors = []
+    if selection.get("paper_id") != paper_id:
+        errors.append(f"selection paper_id={selection.get('paper_id')!r}, expected {paper_id!r}")
+    valid_paper_types = {
+        "empirical_causal",
+        "empirical_descriptive",
+        "theory",
+        "methods",
+        "literature_review",
+        "mixed",
+        "unknown",
+    }
+    if selection.get("paper_type") not in valid_paper_types:
+        errors.append("selection paper_type is invalid")
+    if selection.get("selection_confidence") not in {"high", "medium", "low"}:
+        errors.append("selection_confidence is invalid")
+    if selection.get("selection_mode") != REVIEWER_SELECTION_MODE:
+        errors.append(f"selection_mode must be {REVIEWER_SELECTION_MODE!r}")
+
+    optional_by_name = {reviewer.name: reviewer for reviewer in optional_reviewers if reviewer.enabled}
+    mandatory_names = {reviewer.name for reviewer in mandatory_reviewers}
+    selected_items = selection.get("selected_optional_reviewers", [])
+    skipped_items = selection.get("skipped_optional_reviewers", [])
+    if not isinstance(selected_items, list):
+        errors.append("selected_optional_reviewers must be a list")
+        selected_items = []
+    if not isinstance(skipped_items, list):
+        errors.append("skipped_optional_reviewers must be a list")
+        skipped_items = []
+
+    selected_names = []
+    for index, item in enumerate(selected_items):
+        if not isinstance(item, dict):
+            errors.append(f"selected_optional_reviewers[{index}] must be an object")
+            continue
+        name = item.get("name")
+        reason = item.get("reason")
+        if not isinstance(name, str) or not name:
+            errors.append(f"selected_optional_reviewers[{index}].name must be a non-empty string")
+            continue
+        if not isinstance(reason, str) or not reason.strip():
+            errors.append(f"selected_optional_reviewers[{index}].reason must be a non-empty string")
+        if name in mandatory_names:
+            errors.append(f"selected reviewer is mandatory, not optional: {name}")
+        if name not in optional_by_name:
+            errors.append(f"selected reviewer is not an enabled optional reviewer: {name}")
+        selected_names.append(name)
+
+    duplicates = sorted({name for name in selected_names if selected_names.count(name) > 1})
+    for name in duplicates:
+        errors.append(f"selected reviewer is duplicated: {name}")
+    skipped_names = []
+    for index, item in enumerate(skipped_items):
+        if not isinstance(item, dict):
+            errors.append(f"skipped_optional_reviewers[{index}] must be an object")
+            continue
+        name = item.get("name")
+        reason = item.get("reason")
+        if not isinstance(name, str) or not name:
+            errors.append(f"skipped_optional_reviewers[{index}].name must be a non-empty string")
+            continue
+        if not isinstance(reason, str) or not reason.strip():
+            errors.append(f"skipped_optional_reviewers[{index}].reason must be a non-empty string")
+        if name not in optional_by_name:
+            errors.append(f"skipped reviewer is not an enabled optional reviewer: {name}")
+        skipped_names.append(name)
+
+    overlap = sorted(set(selected_names) & set(skipped_names))
+    for name in overlap:
+        errors.append(f"reviewer cannot be both selected and skipped: {name}")
+    skipped_duplicates = sorted({name for name in skipped_names if skipped_names.count(name) > 1})
+    for name in skipped_duplicates:
+        errors.append(f"skipped reviewer is duplicated: {name}")
+    accounted_for = set(selected_names) | set(skipped_names)
+    for name in sorted(set(optional_by_name) - accounted_for):
+        errors.append(f"enabled optional reviewer is neither selected nor skipped: {name}")
+    return errors
+
+
+def selected_reviewers_from_selection(
+    selection: dict,
+    mandatory_reviewers: list[ReviewerConfig],
+    optional_reviewers: list[ReviewerConfig],
+) -> list[ReviewerConfig]:
+    optional_by_name = {reviewer.name: reviewer for reviewer in optional_reviewers}
+    selected_names = [item["name"] for item in selection.get("selected_optional_reviewers", [])]
+    selected_optional = [optional_by_name[name] for name in selected_names]
+    return [*mandatory_reviewers, *selected_optional]
+
+
+def run_reviewer_batch(
+    reviewers: list[ReviewerConfig],
+    repo: Path,
+    prompts_dir: Path,
+    reviews_dir: Path,
+    schema_path: Path,
+    log_dir: Path,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+    max_parallel: int = 4,
+    timeout_seconds: float | None = None,
+) -> float:
+    if not reviewers:
+        return time.time() - 1.0
+    reviewer_started_at = time.time() - 1.0
+    for start in range(0, len(reviewers), max_parallel):
+        batch = reviewers[start : start + max_parallel]
+        running = [
+            start_reviewer(
+                reviewer,
+                repo,
+                prompts_dir,
+                reviews_dir,
+                schema_path.relative_to(repo),
+                log_dir,
+                model,
+                reasoning_effort,
+            )
+            for reviewer in batch
+        ]
+        reviewer_results = [wait_reviewer(*item, timeout_seconds=timeout_seconds) for item in running]
+        failed_reviewers = [result for result in reviewer_results if result.returncode != 0]
+        if failed_reviewers:
+            failures = ", ".join(
+                f"{result.label} ({result.returncode})" for result in failed_reviewers
+            )
+            raise RuntimeError(f"Reviewer run failed: {failures}")
+    return reviewer_started_at
+
+
+def render_prompts_command(
+    *,
+    paper_id: str,
+    parsed_dir: Path,
+    reviews_dir: Path,
+    schema_path: Path,
+    prompts_dir: Path,
+    reviewers_config: str,
+    repo: Path,
+) -> list[str]:
+    command = [
+        sys.executable,
+        "scripts/render_prompts.py",
+        "--paper-id",
+        paper_id,
+        "--parsed-dir",
+        str(parsed_dir.relative_to(repo)),
+        "--reviews-dir",
+        str(reviews_dir.relative_to(repo)),
+        "--schema-path",
+        str(schema_path.relative_to(repo)),
+        "--output-dir",
+        str(prompts_dir.relative_to(repo)),
+        "--reviewers-config",
+        reviewers_config,
+    ]
+    return command
+
+
+def validate_reviewer_batch(
+    reviewers: list[ReviewerConfig],
+    reviewer_started_at: float,
+    repo: Path,
+    paper_id: str,
+    reviews_dir: Path,
+    schema_path: Path,
+    reviewers_config: str,
+    log_dir: Path,
+    keep_going: bool,
+) -> list[str]:
+    validation_errors = []
+    for reviewer in reviewers:
+        output_path = reviews_dir / reviewer.output
+        try:
+            require_fresh_file(output_path, reviewer_started_at, f"{reviewer.name} output")
+            validate_reviewer_json(output_path, reviewer.name, paper_id)
+            run_required(
+                f"validate-{reviewer.name}",
+                [
+                    sys.executable,
+                    "scripts/validate_review_json.py",
+                    "--schema",
+                    str(schema_path.relative_to(repo)),
+                    "--input",
+                    str(output_path.relative_to(repo)),
+                    "--reviewers-config",
+                    str((repo / reviewers_config).relative_to(repo) if not Path(reviewers_config).is_absolute() else reviewers_config),
+                ],
+                repo,
+                log_dir,
+            )
+            enforce_preflight_gate(reviewer, output_path)
+        except Exception as exc:
+            validation_errors.append(f"{reviewer.name}: {exc}")
+            if not keep_going:
+                break
+    return validation_errors
+
+
+def main() -> int:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(line_buffering=True)
+    parser = argparse.ArgumentParser(description="Run the full paper-review pipeline for one PDF.")
+    parser.add_argument("--pdf", required=True, help="Path to source PDF, usually under inputs/")
+    parser.add_argument("--paper-id", default=None, help="Optional paper id; defaults to the PDF filename stem")
+    parser.add_argument(
+        "--keep-going",
+        action="store_true",
+        help="Continue validating remaining reviewer outputs after a reviewer-output validation error.",
+    )
+    parser.add_argument("--reviewers-config", default="config/reviewers.json")
+    parser.add_argument(
+        "--resume-after-preflight",
+        action="store_true",
+        help=(
+            "Reuse existing deterministic parsed artifacts and validated preflight JSON for the same "
+            "paper ID and PDF hash, then continue from reviewer selection."
+        ),
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help=(
+            "Override the Claude model used by all agents, e.g. claude-opus-5. "
+            "The default comes from config/defaults.toml."
+        ),
+    )
+    parser.add_argument(
+        "--reasoning-effort",
+        choices=REASONING_EFFORT_CHOICES,
+        default="xhigh",
+        help=(
+            "Override the reasoning effort for substantive reviewers and the editor. "
+            "The recommended default is xhigh."
+        ),
+    )
+    parser.add_argument(
+        "--preflight-reasoning-effort",
+        choices=REASONING_EFFORT_CHOICES,
+        default="high",
+        help="Reasoning effort for parser-quality preflight. Default: high.",
+    )
+    parser.add_argument(
+        "--selector-reasoning-effort",
+        choices=REASONING_EFFORT_CHOICES,
+        default="high",
+        help="Reasoning effort for conservative reviewer applicability routing. Default: high.",
+    )
+    parser.add_argument(
+        "--max-parallel-reviewers",
+        type=int,
+        default=4,
+        help="Maximum reviewer agents to run at once. Default: 4.",
+    )
+    parser.add_argument(
+        "--agent-timeout-minutes",
+        type=float,
+        default=45.0,
+        help="Timeout for each preflight, substantive reviewer, and editor agent. Default: 45 minutes.",
+    )
+    parser.add_argument(
+        "--selector-timeout-minutes",
+        type=float,
+        default=15.0,
+        help="Timeout for reviewer applicability routing. Default: 15 minutes.",
+    )
+    args = parser.parse_args()
+
+    if args.max_parallel_reviewers < 1:
+        raise ValueError("--max-parallel-reviewers must be at least 1")
+    if args.agent_timeout_minutes <= 0 or args.selector_timeout_minutes <= 0:
+        raise ValueError("agent timeouts must be greater than zero")
+
+    repo = repo_root()
+    pdf_path = Path(args.pdf)
+    if not pdf_path.is_absolute():
+        pdf_path = repo / pdf_path
+    pdf_path = pdf_path.resolve()
+    if not pdf_path.exists():
+        raise FileNotFoundError(f"PDF not found: {pdf_path}")
+    if pdf_path.suffix.lower() != ".pdf":
+        raise ValueError(f"Expected a PDF file, got: {pdf_path.name}")
+
+    paper_id = slugify(args.paper_id or pdf_path.stem)
+    paths = paper_run_paths(repo, paper_id)
+    parsed_dir = paths.parsed_dir
+    prompts_dir = paths.prompts_dir
+    reviews_dir = paths.reviews_dir
+    selection_dir = paths.selection_dir
+    log_dir = paths.log_dir
+    outputs_dir = paths.outputs_dir
+    report_path = paths.report_path
+    schema_path = repo / "schemas" / "reviewer_output.schema.json"
+    selection_schema_path = repo / "schemas" / "reviewer_selection.schema.json"
+    bundle_path = paths.bundle_path
+    editor_input_path = paths.editor_input_path
+    reviewers_config_path = repo / args.reviewers_config if not Path(args.reviewers_config).is_absolute() else Path(args.reviewers_config)
+    reviewers = load_reviewers_config(reviewers_config_path)
+    preflight_reviewers = [reviewer for reviewer in reviewers if reviewer.stage == "preflight"]
+    standard_reviewers = [reviewer for reviewer in reviewers if reviewer.stage == "review"]
+    mandatory_reviewers = [
+        reviewer for reviewer in standard_reviewers if reviewer.selection_policy == "mandatory"
+    ]
+    optional_reviewers = [
+        reviewer for reviewer in standard_reviewers if reviewer.selection_policy == "optional"
+    ]
+    selected_reviewers_config_path = paths.selected_reviewers_config_path
+
+    defaults = project_defaults(repo)
+    effective_model = args.model or defaults.get("model")
+    effective_reasoning = args.reasoning_effort or defaults.get("model_reasoning_effort")
+    source_pdf_sha256 = file_sha256(pdf_path)
+    prior_manifest = None
+    if paths.run_manifest_path.exists():
+        try:
+            prior_manifest = json.loads(paths.run_manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            prior_manifest = None
+    if args.resume_after_preflight:
+        if not prior_manifest:
+            raise RuntimeError("--resume-after-preflight requires an existing valid run_manifest.json")
+        if prior_manifest.get("source_pdf_sha256") != source_pdf_sha256:
+            raise RuntimeError("Cannot resume: source PDF hash differs from the prior run")
+        required_resume_paths = [parsed_dir / "manifest.json"] + [
+            reviews_dir / reviewer.output for reviewer in preflight_reviewers
+        ]
+        missing_resume_paths = [path for path in required_resume_paths if not path.is_file()]
+        if missing_resume_paths:
+            raise RuntimeError(
+                "Cannot resume; missing parsed/preflight artifacts: "
+                + ", ".join(str(path.relative_to(repo)) for path in missing_resume_paths)
+            )
+        try:
+            parsed_manifest = json.loads(
+                (parsed_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Cannot resume: parsed manifest is not valid JSON") from exc
+        if parsed_manifest.get("source_pdf_sha256") != source_pdf_sha256:
+            raise RuntimeError(
+                "Cannot resume: parsed artifacts do not record the current source PDF hash"
+            )
+    run_started = time.time()
+    run_manifest: dict[str, object] = {
+        "paper_id": paper_id,
+        "status": "running",
+        "started_at_utc": utc_now(),
+        "source_pdf": str(pdf_path.relative_to(repo) if repo in pdf_path.parents else pdf_path),
+        "source_pdf_sha256": source_pdf_sha256,
+        "model": effective_model,
+        "reviewer_editor_reasoning_effort": effective_reasoning,
+        "preflight_reasoning_effort": args.preflight_reasoning_effort,
+        "selector_reasoning_effort": args.selector_reasoning_effort,
+        "reviewer_selection": REVIEWER_SELECTION_MODE,
+        "max_parallel_reviewers": args.max_parallel_reviewers,
+        "agent_timeout_minutes": args.agent_timeout_minutes,
+        "selector_timeout_minutes": args.selector_timeout_minutes,
+        "reviewers_config": args.reviewers_config,
+        "resumed_after_preflight": args.resume_after_preflight,
+        "python": sys.version,
+        "git": git_metadata(repo),
+    }
+    write_run_manifest(paths.run_manifest_path, run_manifest)
+
+    log_dir.mkdir(parents=True, exist_ok=True)
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"[paper] {paper_id}")
+    print(f"[pdf] {pdf_path}")
+    print(f"[model] {effective_model or 'Claude Code default'}")
+    print(f"[reasoning] preflight={args.preflight_reasoning_effort}, selector={args.selector_reasoning_effort}, reviewers/editor=n/a")
+
+    if not args.resume_after_preflight:
+        run_required(
+            "preprocess",
+            [
+                sys.executable,
+                "scripts/preprocess_pdf.py",
+                "--pdf",
+                str(pdf_path),
+                "--paper-id",
+                paper_id,
+            ],
+            repo,
+            log_dir,
+        )
+    else:
+        print("[resume] reusing deterministic parsed artifacts and preflight outputs")
+
+    run_required(
+        "render-prompts",
+        render_prompts_command(
+            paper_id=paper_id,
+            parsed_dir=parsed_dir,
+            reviews_dir=reviews_dir,
+            schema_path=schema_path,
+            prompts_dir=prompts_dir,
+            reviewers_config=str((repo / args.reviewers_config).relative_to(repo) if not Path(args.reviewers_config).is_absolute() else args.reviewers_config),
+            repo=repo,
+        ),
+        repo,
+        log_dir,
+    )
+
+    if args.resume_after_preflight:
+        for reviewer in preflight_reviewers:
+            output_path = reviews_dir / reviewer.output
+            validate_reviewer_json(output_path, reviewer.name, paper_id)
+            run_required(
+                f"validate-resumed-{reviewer.name}",
+                [
+                    sys.executable,
+                    "scripts/validate_review_json.py",
+                    "--schema",
+                    str(schema_path.relative_to(repo)),
+                    "--input",
+                    str(output_path.relative_to(repo)),
+                    "--reviewers-config",
+                    args.reviewers_config,
+                ],
+                repo,
+                log_dir,
+            )
+            enforce_preflight_gate(reviewer, output_path)
+    else:
+        preflight_started_at = run_reviewer_batch(
+            preflight_reviewers,
+            repo,
+            prompts_dir,
+            reviews_dir,
+            schema_path,
+            log_dir,
+            args.model,
+            args.preflight_reasoning_effort,
+            args.max_parallel_reviewers,
+            args.agent_timeout_minutes * 60,
+        )
+        preflight_errors = validate_reviewer_batch(
+            preflight_reviewers,
+            preflight_started_at,
+            repo,
+            paper_id,
+            reviews_dir,
+            schema_path,
+            args.reviewers_config,
+            log_dir,
+            args.keep_going,
+        )
+        if preflight_errors:
+            raise RuntimeError("Preflight reviewer validation/gate failed: " + "; ".join(preflight_errors))
+
+    selection, _selection_started_at = run_reviewer_selector(
+        repo,
+        paper_id,
+        parsed_dir,
+        optional_reviewers,
+        selection_dir,
+        selection_schema_path,
+        log_dir,
+        args.model,
+        args.selector_reasoning_effort,
+        args.selector_timeout_minutes * 60,
+    )
+    selection_errors = validate_selection_output(
+        selection,
+        paper_id,
+        mandatory_reviewers,
+        optional_reviewers,
+    )
+    if selection_errors:
+        raise RuntimeError("Reviewer applicability routing failed: " + "; ".join(selection_errors))
+    selection = enforce_conservative_applicability(selection, optional_reviewers)
+    selection_errors = validate_selection_output(
+        selection,
+        paper_id,
+        mandatory_reviewers,
+        optional_reviewers,
+    )
+    if selection_errors:
+        raise RuntimeError(
+            "Conservative reviewer applicability guardrail failed: "
+            + "; ".join(selection_errors)
+        )
+    write_run_manifest(selection_dir / SELECTOR_OUTPUT, selection)
+    standard_reviewers = selected_reviewers_from_selection(
+        selection, mandatory_reviewers, optional_reviewers
+    )
+    write_reviewers_config(
+        selected_reviewers_config_path, [*preflight_reviewers, *standard_reviewers]
+    )
+    active_reviewers_config = str(selected_reviewers_config_path.relative_to(repo))
+    print(
+        "[selection] applicability roster: "
+        + ", ".join(reviewer.name for reviewer in standard_reviewers)
+    )
+    run_required(
+        "render-selected-prompts",
+        render_prompts_command(
+            paper_id=paper_id,
+            parsed_dir=parsed_dir,
+            reviews_dir=reviews_dir,
+            schema_path=schema_path,
+            prompts_dir=prompts_dir,
+            reviewers_config=active_reviewers_config,
+            repo=repo,
+        ),
+        repo,
+        log_dir,
+    )
+
+    reviewer_started_at = run_reviewer_batch(
+        standard_reviewers,
+        repo,
+        prompts_dir,
+        reviews_dir,
+        schema_path,
+        log_dir,
+        args.model,
+        args.reasoning_effort,
+        args.max_parallel_reviewers,
+        args.agent_timeout_minutes * 60,
+    )
+    validation_errors = validate_reviewer_batch(
+        standard_reviewers,
+        reviewer_started_at,
+        repo,
+        paper_id,
+        reviews_dir,
+        schema_path,
+        active_reviewers_config,
+        log_dir,
+        args.keep_going,
+    )
+    if validation_errors:
+        raise RuntimeError("Reviewer validation failed: " + "; ".join(validation_errors))
+
+    run_required(
+        "normalize",
+        [
+            sys.executable,
+            "scripts/normalize_review_outputs.py",
+            "--paper-id",
+            paper_id,
+            "--reviews-dir",
+            str(reviews_dir.relative_to(repo)),
+            "--output",
+            str(bundle_path.relative_to(repo)),
+            "--reviewers-config",
+            active_reviewers_config,
+        ],
+        repo,
+        log_dir,
+    )
+
+    run_required(
+        "build-editor-input",
+        [
+            sys.executable,
+            "scripts/build_editor_input.py",
+            "--paper-id",
+            paper_id,
+            "--editor-prompt",
+            str((prompts_dir / "editor_report.txt").relative_to(repo)),
+            "--bundle",
+            str(bundle_path.relative_to(repo)),
+            "--reviews-dir",
+            str(reviews_dir.relative_to(repo)),
+            "--output",
+            str(editor_input_path.relative_to(repo)),
+            "--reviewers-config",
+            active_reviewers_config,
+        ],
+        repo,
+        log_dir,
+    )
+
+    editor_started_at = time.time() - 1.0
+    editor_input = editor_input_path.read_text(encoding="utf-8")
+    editor_result = run_required(
+        "editor",
+        [*model_exec_command(model=args.model, reasoning_effort=args.reasoning_effort)],
+        repo,
+        log_dir,
+        input_text=editor_input,
+        capture_text_to=report_path,
+        timeout_seconds=args.agent_timeout_minutes * 60,
+    )
+    require_fresh_file(report_path, editor_started_at, "final report")
+    recover_editor_report_if_needed(report_path, editor_result.stderr_path)
+
+    check_result = run_required(
+        "check-final-report",
+        [
+            sys.executable,
+            "scripts/check_final_report.py",
+            "--input",
+            str(report_path.relative_to(repo)),
+            "--bundle",
+            str(bundle_path.relative_to(repo)),
+        ],
+        repo,
+        log_dir,
+    )
+    run_manifest.update(
+        {
+            "status": "complete",
+            "completed_at_utc": utc_now(),
+            "duration_seconds": round(time.time() - run_started, 3),
+            "selected_reviewers": [reviewer.name for reviewer in standard_reviewers],
+            "report": str(report_path.relative_to(repo)),
+        }
+    )
+    write_run_manifest(paths.run_manifest_path, run_manifest)
+    print(f"[done] report: {report_path.relative_to(repo)}")
+    print(f"[logs] {log_dir.relative_to(repo)}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
