@@ -1,0 +1,24 @@
+\documentclass{article}
+\usepackage{graphicx}
+\title{A Tiny Paper for Pipeline Tests}
+\author{Test Author}
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We report that a small intervention raised the outcome by 0.25 standard deviations (s.e. 0.08) in a sample of 1,200 students across 40 schools. This abstract exists so the pipeline has something to parse.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+This paper reports an effect of 0.25 standard deviations \citep{doe2020}. Section~\ref{sec:results} presents the estimate and Table~\ref{tab:main} the numbers.
+
+\input{sections/results}
+
+\section{Conclusion}
+The effect in Table~\ref{tab:main} is 0.25, not 0.30 as an earlier draft said. Sample size was 1,200.
+
+\bibliographystyle{plainnat}
+\bibliography{refs}
+
+\end{document}

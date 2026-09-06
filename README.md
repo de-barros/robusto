@@ -141,6 +141,39 @@ ran, with source mode listing its own limitations explicitly.
 
 Override the model with `--model`; the default is in `config/defaults.toml`.
 
+## Proving the pipeline without spending a token
+
+```bash
+python scripts/review_paper.py --backend mock --source "path/to/manuscript.tex" --paper-id smoke
+```
+
+`--backend mock` replaces every model call with `scripts/mock_claude.py`, which
+answers from the prompt alone with synthetic, schema-valid output. Everything
+else runs for real on your actual manuscript: the deterministic parse, prompt
+rendering, the preflight gate, applicability routing, all twenty reviewers in
+parallel batches, the schema contract and its bounded retry, semantic
+validation, normalisation, editor assembly, and the final-report check. A full
+run takes about fifteen seconds and costs nothing.
+
+Use it before a real run to confirm the parse is sound and the machinery holds,
+and in CI, where no CLI is logged in. A mock report cannot be mistaken for a
+review: it opens with a banner saying so, every finding names the mock, and
+`run_manifest.json` records `"backend": "mock"`.
+
+Two knobs reach the paths a clean run never touches:
+
+```bash
+ROBUSTO_MOCK_DRIFT=numerical_auditor   # first reply breaks the contract; the retry must recover
+ROBUSTO_MOCK_FAIL=robustness_auditor   # every reply breaks it; the run must stop, naming the reviewer
+```
+
+`ROBUSTO_MOCK_FINDINGS=N` sets findings per reviewer (default 2) and
+`ROBUSTO_MOCK_SKIP=name,name` makes the selector skip optional reviewers.
+`check_environment.py --backend mock` confirms the mock answers the probe.
+
+`tests/test_mock_pipeline.py` runs this end to end on a tiny fixture manuscript,
+including `--resume-after-preflight` and both misbehaviour paths.
+
 ## Using it as a Claude Code skill
 
 The repository ships a skill at `.claude/skills/robusto/`, which Claude Code

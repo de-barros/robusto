@@ -350,17 +350,9 @@ def collect_figures(text: str) -> list[dict]:
     return inventory
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Build parsed artifacts from LaTeX source rather than a PDF."
-    )
-    parser.add_argument("--source", required=True, help="Root .tex file, or a directory holding one")
-    parser.add_argument("--paper-id", required=True)
-    parser.add_argument("--bib", action="append", default=None, help="Explicit .bib path; repeatable")
-    args = parser.parse_args()
-
-    repo = Path(__file__).resolve().parents[1]
-    source = Path(args.source).resolve()
+def resolve_root(source: Path) -> Path:
+    """Accept a root .tex file or a directory holding exactly one."""
+    source = Path(source).resolve()
     if source.is_dir():
         roots = [p for p in sorted(source.glob("*.tex")) if "\\documentclass" in
                  p.read_text(encoding="utf-8", errors="replace")[:4000].replace("\r", "")]
@@ -372,6 +364,43 @@ def main() -> int:
         source = roots[0]
     if not source.exists():
         raise SystemExit(f"Source not found: {source}")
+    return source
+
+
+def discover_bibs(root: Path, explicit: list[str] | None = None) -> list[Path]:
+    if explicit:
+        return [Path(b).resolve() for b in explicit]
+    return sorted(root.parent.glob("*.bib"))
+
+
+def source_sha256(root: Path, bibs: list[Path] | None = None) -> str:
+    """Digest of everything the parse depends on.
+
+    The root file alone is the wrong thing to hash: a manuscript built from a
+    repository is mostly \\input files, and an edit to any of them, or to the
+    bibliography, changes the parse while leaving the root untouched. Resume
+    compares this digest, so it has to cover the flattened text and each .bib.
+    """
+    text, _ = flatten(root)
+    digest = hashlib.sha256(text.encode("utf-8"))
+    for bib in (bibs if bibs is not None else discover_bibs(root)):
+        if bib.exists():
+            digest.update(b"\x00bib:" + bib.name.encode("utf-8") + b"\x00")
+            digest.update(bib.read_bytes())
+    return digest.hexdigest()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Build parsed artifacts from LaTeX source rather than a PDF."
+    )
+    parser.add_argument("--source", required=True, help="Root .tex file, or a directory holding one")
+    parser.add_argument("--paper-id", required=True)
+    parser.add_argument("--bib", action="append", default=None, help="Explicit .bib path; repeatable")
+    args = parser.parse_args()
+
+    repo = Path(__file__).resolve().parents[1]
+    source = resolve_root(Path(args.source))
 
     paths = paper_run_paths(repo, args.paper_id)
     parsed = paths.parsed_dir
@@ -388,10 +417,7 @@ def main() -> int:
     figures = collect_figures(text)
 
     cited = {c["citation_text"].lower() for c in citations}
-    if args.bib:
-        bibs = [Path(b).resolve() for b in args.bib]
-    else:
-        bibs = sorted(source.parent.glob("*.bib"))
+    bibs = discover_bibs(source, args.bib)
     references = collect_references([b for b in bibs if b.exists()], cited)
 
     write_json(parsed / "sections.json", sections)
@@ -413,6 +439,9 @@ def main() -> int:
         "mode": "source",
         "source_root": str(source),
         "source_root_sha256": sha256(source),
+        # The key review_paper.py compares on resume; covers every included
+        # file and bibliography, not just the root.
+        "source_pdf_sha256": source_sha256(source, bibs),
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "tool_versions": {"python": sys.version},
         "settings": {

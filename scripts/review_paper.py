@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -14,8 +15,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from pipeline_paths import paper_run_paths
+from preprocess_source import resolve_root, source_sha256
 from render_prompts import render_template
 from claude_backend import (
+    active_backend,
     auth_failure_hint,
     billing_route_warning,
     claude_exec_command,
@@ -831,6 +834,18 @@ def main() -> int:
     )
     parser.add_argument("--paper-id", default=None, help="Optional paper id; defaults to the input filename stem")
     parser.add_argument(
+        "--backend",
+        choices=("claude", "mock"),
+        default=None,
+        help=(
+            "What answers each model call. 'claude' is the real CLI (default). "
+            "'mock' answers from the prompt with synthetic, schema-valid output and "
+            "spends no tokens: use it to prove the pipeline end to end on a real "
+            "manuscript before running the panel for real. A mock report is "
+            "unmistakable; it opens with a banner saying so."
+        ),
+    )
+    parser.add_argument(
         "--keep-going",
         action="store_true",
         help="Continue validating remaining reviewer outputs after a reviewer-output validation error.",
@@ -893,6 +908,10 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if args.backend:
+        os.environ["ROBUSTO_BACKEND"] = args.backend
+    backend = active_backend()
+
     if args.max_parallel_reviewers < 1:
         raise ValueError("--max-parallel-reviewers must be at least 1")
     if args.agent_timeout_minutes <= 0 or args.selector_timeout_minutes <= 0:
@@ -915,6 +934,8 @@ def main() -> int:
             raise ValueError(f"Expected a PDF file, got: {pdf_path.name}")
     elif not pdf_path.exists():
         raise FileNotFoundError(f"LaTeX source not found: {pdf_path}")
+    else:
+        pdf_path = resolve_root(pdf_path)
 
     paper_id = slugify(args.paper_id or pdf_path.stem)
     paths = paper_run_paths(repo, paper_id)
@@ -944,7 +965,11 @@ def main() -> int:
     defaults = project_defaults(repo)
     effective_model = args.model or defaults.get("model")
     effective_reasoning = args.reasoning_effort or defaults.get("model_reasoning_effort")
-    source_pdf_sha256 = file_sha256(pdf_path)
+    # In source mode the root file is a poor fingerprint: the manuscript is
+    # mostly input files, so hash what the parse actually read.
+    source_pdf_sha256 = (
+        source_sha256(pdf_path) if input_mode == "source" else file_sha256(pdf_path)
+    )
     prior_manifest = None
     if paths.run_manifest_path.exists():
         try:
@@ -983,6 +1008,7 @@ def main() -> int:
         "source_pdf": str(pdf_path.relative_to(repo) if repo in pdf_path.parents else pdf_path),
         "source_pdf_sha256": source_pdf_sha256,
         "model": effective_model,
+        "backend": backend,
         "reviewer_editor_reasoning_effort": effective_reasoning,
         "preflight_reasoning_effort": args.preflight_reasoning_effort,
         "selector_reasoning_effort": args.selector_reasoning_effort,
@@ -1004,9 +1030,13 @@ def main() -> int:
     print(f"[mode] {input_mode}")
     print(f"[input] {pdf_path}")
     print(f"[model] {effective_model or 'Claude Code default'}")
-    _route = billing_route_warning()
-    if _route:
-        print(f"[warn] {_route}")
+    if backend == "mock":
+        print("[backend] mock: synthetic replies, no model calls, no tokens; the report will say so")
+    else:
+        print(f"[backend] {backend}")
+        _route = billing_route_warning()
+        if _route:
+            print(f"[warn] {_route}")
     print(f"[reasoning] preflight={args.preflight_reasoning_effort}, selector={args.selector_reasoning_effort}, reviewers/editor=n/a")
 
     if not args.resume_after_preflight:

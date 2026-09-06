@@ -27,6 +27,7 @@ import json
 import os
 import re
 import shutil
+import sys
 from pathlib import Path
 
 CLAUDE_CANDIDATES = ("claude.cmd", "claude.exe", "claude")
@@ -46,6 +47,22 @@ CLAUDE_FALLBACK_DIRS = (
 #: Point this at a specific binary when several are installed, or when the CLI
 #: lives somewhere none of the above cover.
 CLAUDE_BIN_ENV = "ROBUSTO_CLAUDE_BIN"
+
+#: Which process answers a model call. ``claude`` is the real CLI. ``mock`` is
+#: scripts/mock_claude.py, which answers from the prompt alone and spends no
+#: tokens, so the whole pipeline after the model call can be exercised on a
+#: real manuscript before any reviewer runs for real, and in CI with no login.
+BACKEND_ENV = "ROBUSTO_BACKEND"
+BACKENDS = ("claude", "mock")
+
+
+def active_backend() -> str:
+    value = (os.environ.get(BACKEND_ENV) or "claude").strip().lower()
+    if value not in BACKENDS:
+        raise BackendUnavailable(
+            f"{BACKEND_ENV}={value!r} is not one of: {', '.join(BACKENDS)}"
+        )
+    return value
 
 #: Tools a reviewer may use. The pipeline is deliberately read-only: reviewers
 #: reason over already-parsed artifacts and must not edit the repository.
@@ -136,6 +153,8 @@ def claude_exec_command(
     Mirrors upstream's ``codex_exec_command``. ``reasoning_effort`` has no
     counterpart and is deliberately dropped rather than faked.
     """
+    if active_backend() == "mock":
+        return [sys.executable, str(Path(__file__).resolve().with_name("mock_claude.py"))]
     command = [claude_command(), "-p"]
     if model:
         command.extend(["--model", model])

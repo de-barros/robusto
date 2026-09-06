@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
-import shutil
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from claude_backend import billing_route_warning, probe_authentication  # noqa: E402
+from claude_backend import (  # noqa: E402
+    BackendUnavailable,
+    active_backend,
+    billing_route_warning,
+    claude_command,
+    probe_authentication,
+)
 
 
 REQUIRED_MODULES = [
@@ -51,7 +57,15 @@ def main() -> int:
             "what CI wants and what a human almost never does."
         ),
     )
+    parser.add_argument(
+        "--backend",
+        choices=("claude", "mock"),
+        default=None,
+        help="Check the mock backend instead of the real CLI. See review_paper.py --backend.",
+    )
     args = parser.parse_args()
+    if args.backend:
+        os.environ["ROBUSTO_BACKEND"] = args.backend
     root = repo_root()
     failures: list[str] = []
 
@@ -63,26 +77,36 @@ def main() -> int:
     if paths:
         failures.append("Missing project files: " + ", ".join(paths))
 
-    cli_present = any(
-        shutil.which(name) is not None for name in ("claude", "claude.cmd", "claude.exe")
-    )
-    if not cli_present:
-        failures.append("Claude Code CLI was not found on PATH")
-    elif not args.offline:
-        # Presence is not readiness. An expired token passes every static check
-        # and then kills the first reviewer, after the parse has already run.
-        print("[check] probing the Claude Code CLI for a valid session ...")
-        hint = probe_authentication()
-        if hint:
-            failures.append(hint)
-
-    # Not a failure: a gateway is a legitimate choice. But it decides which
-    # account pays for the run, so it is never left implicit.
-    route = billing_route_warning()
-    if route:
-        print(f"[warn] {route}", file=sys.stderr)
+    backend = active_backend()
+    if backend == "mock":
+        print("[check] backend: mock (synthetic replies; no model calls, no tokens)")
+        if not args.offline:
+            hint = probe_authentication()
+            if hint:
+                failures.append(hint)
     else:
-        print("[check] model calls will use your Claude Code subscription.")
+        # The same resolver the pipeline uses, so a CLI found only in an
+        # installer directory is not reported missing here and found later.
+        try:
+            claude_command()
+        except BackendUnavailable as exc:
+            failures.append(str(exc))
+        else:
+            if not args.offline:
+                # Presence is not readiness. An expired token passes every static
+                # check and then kills the first reviewer, after the parse has run.
+                print("[check] probing the Claude Code CLI for a valid session ...")
+                hint = probe_authentication()
+                if hint:
+                    failures.append(hint)
+
+        # Not a failure: a gateway is a legitimate choice. But it decides which
+        # account pays for the run, so it is never left implicit.
+        route = billing_route_warning()
+        if route:
+            print(f"[warn] {route}", file=sys.stderr)
+        else:
+            print("[check] model calls will use your Claude Code subscription.")
 
     if failures:
         for failure in failures:
