@@ -846,6 +846,17 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--stop-after",
+        choices=("preflight", "selection"),
+        default=None,
+        help=(
+            "Stop cleanly after a stage and write the manifest. 'preflight' costs "
+            "one model call and proves the schema contract on this paper; "
+            "'selection' costs two and also shows which reviewers would run. "
+            "Continue with --resume-after-preflight."
+        ),
+    )
+    parser.add_argument(
         "--keep-going",
         action="store_true",
         help="Continue validating remaining reviewer outputs after a reviewer-output validation error.",
@@ -1115,6 +1126,19 @@ def main() -> int:
         if preflight_errors:
             raise RuntimeError("Preflight reviewer validation/gate failed: " + "; ".join(preflight_errors))
 
+    if args.stop_after == "preflight":
+        run_manifest.update(
+            {"status": "stopped", "stopped_after": "preflight", "completed_at_utc": utc_now()}
+        )
+        write_run_manifest(paths.run_manifest_path, run_manifest)
+        print(
+            "[stop] preflight validated. Parsed artifacts are in "
+            f"{parsed_dir.relative_to(repo)}, the gate's findings in "
+            f"{(reviews_dir / preflight_reviewers[0].output).relative_to(repo)}. "
+            "Continue with --resume-after-preflight."
+        )
+        return 0
+
     selection, _selection_started_at = run_reviewer_selector(
         repo,
         paper_id,
@@ -1173,6 +1197,23 @@ def main() -> int:
         repo,
         log_dir,
     )
+
+    if args.stop_after == "selection":
+        run_manifest.update(
+            {
+                "status": "stopped",
+                "stopped_after": "selection",
+                "selected_reviewers": [reviewer.name for reviewer in standard_reviewers],
+                "completed_at_utc": utc_now(),
+            }
+        )
+        write_run_manifest(paths.run_manifest_path, run_manifest)
+        print(
+            f"[stop] {len(standard_reviewers)} reviewers selected; their rendered prompts are in "
+            f"{prompts_dir.relative_to(repo)}. Continue with --resume-after-preflight "
+            "(the selector runs once more; one call)."
+        )
+        return 0
 
     reviewer_started_at = run_reviewer_batch(
         standard_reviewers,

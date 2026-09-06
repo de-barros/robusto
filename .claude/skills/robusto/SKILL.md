@@ -84,7 +84,14 @@ confirm the parse is sound and the machinery holds before anything is spent.
 It takes about fifteen seconds. Offer it as a dry run when the user is unsure
 about the input, the cost, or whether the CLI is logged in.
 
-A real run takes a long time and makes many model calls. Say so before starting, and
+Add `--stop-after preflight` to make the first real run cost one model call:
+the parse and the parser-quality auditor run, then it stops cleanly, and one
+real reviewer has answered a real prompt on this paper. `--stop-after
+selection` costs two calls and also shows which reviewers would run. Continue
+either with `--resume-after-preflight`, which reuses the parse and the preflight
+output. Prefer this sequence to a full run the first time a manuscript is seen.
+
+A full run takes a long time and makes many model calls. Say so before starting, and
 do not begin a run the user has not asked for.
 
 ## What comes back

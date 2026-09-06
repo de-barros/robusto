@@ -134,5 +134,61 @@ class MockPipelineFailure(unittest.TestCase):
         self.assertIn("[ok] numerical_auditor", result.stdout)
 
 
+class MockPipelineStopAfter(unittest.TestCase):
+    """Stopping early is how a first real run is made cheap.
+
+    With the real backend, --stop-after preflight is one model call and proves
+    the schema contract on this paper; selection is two. Resume then carries on
+    from the parsed artifacts without paying for either again.
+    """
+
+    def setUp(self) -> None:
+        shutil.rmtree(WORK, ignore_errors=True)
+        shutil.rmtree(OUTPUTS, ignore_errors=True)
+
+    tearDown = setUp
+
+    def manifest(self) -> dict:
+        return json.loads((WORK / "run_manifest.json").read_text(encoding="utf-8"))
+
+    def test_stop_after_preflight_then_resume_to_completion(self) -> None:
+        stopped = run_pipeline("--stop-after", "preflight")
+        self.assertEqual(stopped.returncode, 0, stopped.stdout[-2000:] + stopped.stderr[-2000:])
+        self.assertIn("[stop] preflight validated", stopped.stdout)
+        self.assertIn("[ok] parser_quality_auditor", stopped.stdout)
+        self.assertNotIn("reviewer-selector", stopped.stdout)
+        self.assertNotIn("[start] crossref_auditor", stopped.stdout)
+        self.assertFalse((OUTPUTS / "report.md").exists())
+        manifest = self.manifest()
+        self.assertEqual(manifest["status"], "stopped")
+        self.assertEqual(manifest["stopped_after"], "preflight")
+
+        resumed = run_pipeline("--resume-after-preflight")
+        self.assertEqual(resumed.returncode, 0, resumed.stdout[-2000:] + resumed.stderr[-2000:])
+        self.assertIn("[resume] reusing deterministic parsed artifacts", resumed.stdout)
+        self.assertNotIn("[start] parser_quality_auditor", resumed.stdout)
+        self.assertIn("[ok] reviewer-selector", resumed.stdout)
+        self.assertIn("[done] report:", resumed.stdout)
+        manifest = self.manifest()
+        self.assertEqual(manifest["status"], "complete")
+        self.assertTrue(manifest["resumed_after_preflight"])
+        self.assertTrue((OUTPUTS / "report.md").exists())
+
+    def test_stop_after_selection_renders_prompts_and_names_the_roster(self) -> None:
+        stopped = run_pipeline("--stop-after", "selection")
+        self.assertEqual(stopped.returncode, 0, stopped.stdout[-2000:] + stopped.stderr[-2000:])
+        self.assertIn("[ok] reviewer-selector", stopped.stdout)
+        self.assertIn("[selection] applicability roster:", stopped.stdout)
+        self.assertIn("[ok] render-selected-prompts", stopped.stdout)
+        self.assertIn("[stop] 20 reviewers selected", stopped.stdout)
+        self.assertNotIn("[start] crossref_auditor", stopped.stdout)
+        self.assertFalse((OUTPUTS / "report.md").exists())
+        manifest = self.manifest()
+        self.assertEqual(manifest["status"], "stopped")
+        self.assertEqual(manifest["stopped_after"], "selection")
+        self.assertEqual(len(manifest["selected_reviewers"]), 20)
+        self.assertTrue((WORK / "prompts" / "crossref_audit.txt").is_file())
+
+
 if __name__ == "__main__":
     unittest.main()

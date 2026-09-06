@@ -174,6 +174,29 @@ ROBUSTO_MOCK_FAIL=robustness_auditor   # every reply breaks it; the run must sto
 `tests/test_mock_pipeline.py` runs this end to end on a tiny fixture manuscript,
 including `--resume-after-preflight` and both misbehaviour paths.
 
+## The first real run, one call at a time
+
+The mock proves everything except the one thing that matters most: whether a
+real reviewer honours the schema contract on your paper. That can be settled
+for the price of a single model call.
+
+```bash
+python scripts/review_paper.py --source "path/to/manuscript.tex" --paper-id first --stop-after preflight
+```
+
+`--stop-after preflight` runs the parse and the parser-quality auditor, then
+stops cleanly. One reviewer has now answered a real prompt against a real
+manuscript and its reply has been through the contract, the validator and the
+gate. `--stop-after selection` goes one call further and shows you which of the
+twenty reviewers would run. Either way, continue with:
+
+```bash
+python scripts/review_paper.py --source "path/to/manuscript.tex" --paper-id first --resume-after-preflight
+```
+
+Resume reuses the parsed artifacts and the validated preflight output; only the
+selector runs again. The manifest records where a run stopped.
+
 ## Using it as a Claude Code skill
 
 The repository ships a skill at `.claude/skills/robusto/`, which Claude Code
