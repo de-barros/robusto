@@ -1134,7 +1134,7 @@ def main() -> int:
         print(
             "[stop] preflight validated. Parsed artifacts are in "
             f"{parsed_dir.relative_to(repo)}, the gate's findings in "
-            f"{(reviews_dir / preflight_reviewers[0].output).relative_to(repo)}. "
+            f"{reviews_dir.relative_to(repo)}. "
             "Continue with --resume-after-preflight."
         )
         return 0

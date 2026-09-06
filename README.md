@@ -261,7 +261,7 @@ something it does not mean.
 
 ## Status
 
-Covered by 208 passing tests: the upstream suite, the schema-contract layer,
+Covered by 210 passing tests: the upstream suite, the schema-contract layer,
 the LaTeX source front-end, the authentication and billing diagnosis, the mock
 backend, and an end-to-end run of the whole pipeline on a fixture manuscript.
 
