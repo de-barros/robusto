@@ -23,6 +23,7 @@ from claude_backend import (  # noqa: E402
     BackendUnavailable,
     auth_failure_hint,
     billing_route_warning,
+    probe_authentication,
     claude_command,
     claude_exec_command,
     extract_json_object,
@@ -281,6 +282,51 @@ class BillingRoute(unittest.TestCase):
         self.assertIsNotNone(warning)
         self.assertIn("ANTHROPIC_AUTH_TOKEN", warning)
         self.assertNotIn("ANTHROPIC_BASE_URL", warning)
+
+
+class AuthProbe(unittest.TestCase):
+    """The probe must not depend on exit status or on refusal wording.
+
+    An unauthenticated `claude -p` exits 0 and prints its refusal to stdout. A
+    blocklist catches today's phrasing; if that phrasing ever changes, the
+    refusal flows downstream as reviewer output and surfaces as a puzzling
+    schema failure instead of an auth error.
+    """
+
+    def _run(self, stdout="", stderr="", returncode=0):
+        completed = mock.Mock(stdout=stdout, stderr=stderr, returncode=returncode)
+        with mock.patch("claude_backend.claude_command", return_value="claude"),              mock.patch("subprocess.run", return_value=completed):
+            return probe_authentication()
+
+    def test_a_healthy_reply_passes(self) -> None:
+        self.assertIsNone(self._run(stdout=claude_backend.PROBE_TOKEN))
+
+    def test_reply_with_surrounding_prose_still_passes(self) -> None:
+        self.assertIsNone(self._run(stdout=f"Sure.\n{claude_backend.PROBE_TOKEN}\n"))
+
+    def test_known_refusal_wording_is_named(self) -> None:
+        hint = self._run(stdout="Not logged in - Please run /login", returncode=0)
+        self.assertIsNotNone(hint)
+        self.assertIn("not authenticated", hint)
+
+    def test_novel_refusal_wording_at_exit_zero_is_still_caught(self) -> None:
+        """The case the blocklist alone would miss."""
+        hint = self._run(stdout="Your session could not be established.", returncode=0)
+        self.assertIsNotNone(hint)
+        self.assertIn("did not answer the probe", hint)
+
+    def test_silence_at_exit_zero_is_caught(self) -> None:
+        hint = self._run(stdout="", returncode=0)
+        self.assertIsNotNone(hint)
+        self.assertIn("(nothing)", hint)
+
+    def test_a_nonzero_exit_reports_the_code(self) -> None:
+        hint = self._run(stdout="something broke", returncode=3)
+        self.assertIn("exited 3", hint)
+
+    def test_the_nonce_cannot_be_satisfied_by_ordinary_prose(self) -> None:
+        hint = self._run(stdout="I reviewed the paper and found three problems.")
+        self.assertIsNotNone(hint)
 
 
 class CommandConstruction(unittest.TestCase):

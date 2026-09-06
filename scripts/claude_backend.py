@@ -317,12 +317,26 @@ def auth_failure_hint(text: str | None) -> str | None:
     )
 
 
-def probe_authentication(timeout_seconds: float = 60.0) -> str | None:
-    """Ask the CLI for one token. Returns a hint on failure, None when healthy.
+#: A nonce the probe asks for and then requires back. Distinctive enough that it
+#: cannot appear by chance in a refusal, an error banner, or a usage message.
+PROBE_TOKEN = "robusto-probe-ok"
+PROBE_PROMPT = f"Reply with exactly this and nothing else: {PROBE_TOKEN}"
 
-    Presence on PATH says nothing about whether a token is still valid, and an
-    expired one is otherwise discovered only after the deterministic parse has
+
+def probe_authentication(timeout_seconds: float = 60.0) -> str | None:
+    """Ask the CLI to echo a nonce. Returns a hint on failure, None when healthy.
+
+    Presence on PATH says nothing about whether a session is valid, and an
+    unusable one is otherwise discovered only after the deterministic parse has
     run and the first reviewer has been launched.
+
+    The check is positive, not a blocklist. An unauthenticated `claude -p` exits
+    0 and prints its refusal to stdout, so exit status proves nothing, and
+    matching known refusal wording works only until the wording changes. If that
+    happened, the refusal would flow downstream as though it were reviewer output
+    and surface as a puzzling schema failure. Requiring the nonce back means any
+    reply that is not a working model response fails, whatever it says and
+    whatever it exits.
     """
     import subprocess
 
@@ -333,7 +347,7 @@ def probe_authentication(timeout_seconds: float = 60.0) -> str | None:
     try:
         completed = subprocess.run(
             command,
-            input="Reply with the single character: k",
+            input=PROBE_PROMPT,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -346,12 +360,24 @@ def probe_authentication(timeout_seconds: float = 60.0) -> str | None:
         return f"Could not run the Claude Code CLI: {exc}"
 
     combined = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+
+    # Named diagnoses first, because they say what to do about it.
     hint = auth_failure_hint(combined)
     if hint:
         return hint
     if completed.returncode != 0:
         first = next((l.strip() for l in combined.splitlines() if l.strip()), "")
         return f"The Claude Code CLI exited {completed.returncode}: {first[:160]}"
+
+    # Then the catch-all: exit 0, no recognised signature, and still no answer.
+    if PROBE_TOKEN not in combined.lower():
+        first = next((l.strip() for l in combined.splitlines() if l.strip()), "")
+        return (
+            "The Claude Code CLI ran but did not answer the probe, so it cannot "
+            "serve a review run. It exited 0 and said: "
+            f"{first[:160] or '(nothing)'} "
+            "Run `claude` once interactively and complete the login, then retry."
+        )
     return None
 
 
