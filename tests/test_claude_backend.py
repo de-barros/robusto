@@ -248,6 +248,40 @@ class BillingRoute(unittest.TestCase):
         with self._env(ANTHROPIC_BASE_URL=""):
             self.assertIsNone(billing_route_warning())
 
+    def test_the_default_endpoint_is_not_a_diversion(self) -> None:
+        """Presence is not diversion, and a check that cries wolf gets ignored."""
+        for value in (
+            "https://api.anthropic.com",
+            "https://api.anthropic.com/",
+            "HTTPS://API.ANTHROPIC.COM",
+            "  https://api.anthropic.com  ",
+        ):
+            with self._env(ANTHROPIC_BASE_URL=value):
+                self.assertIsNone(billing_route_warning(), value)
+
+    def test_a_non_default_endpoint_still_warns(self) -> None:
+        with self._env(ANTHROPIC_BASE_URL="https://api.portkey.ai"):
+            self.assertIsNotNone(billing_route_warning())
+
+    def test_provider_switches_read_as_flags(self) -> None:
+        for off in ("0", "false", "no", "off", "FALSE"):
+            with self._env(CLAUDE_CODE_USE_BEDROCK=off):
+                self.assertIsNone(billing_route_warning(), off)
+        for on in ("1", "true", "yes"):
+            with self._env(CLAUDE_CODE_USE_BEDROCK=on):
+                self.assertIsNotNone(billing_route_warning(), on)
+
+    def test_a_credential_counts_even_at_the_default_endpoint(self) -> None:
+        """A token replaces the subscription login wherever it points."""
+        with self._env(
+            ANTHROPIC_BASE_URL="https://api.anthropic.com",
+            ANTHROPIC_AUTH_TOKEN="some-gateway-key",
+        ):
+            warning = billing_route_warning()
+        self.assertIsNotNone(warning)
+        self.assertIn("ANTHROPIC_AUTH_TOKEN", warning)
+        self.assertNotIn("ANTHROPIC_BASE_URL", warning)
+
 
 class CommandConstruction(unittest.TestCase):
     def test_read_only_tools_by_default(self) -> None:

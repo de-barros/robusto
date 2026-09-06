@@ -258,9 +258,40 @@ GATEWAY_ENV_VARS = (
 )
 
 
+#: The stock endpoint. Set explicitly to this, ``ANTHROPIC_BASE_URL`` diverts
+#: nothing, so warning about it is a false positive, and a check that cries wolf
+#: on the default is one the reader learns to skip past.
+DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
+
+#: Values that mean "off" for the provider switches, which are read as flags.
+FALSE_VALUES = ("", "0", "false", "no", "off")
+
+
+def _diverts(name: str, value: str) -> bool:
+    """Does this variable actually send calls somewhere other than the default?"""
+    cleaned = value.strip()
+    if not cleaned:
+        return False
+    if name == "ANTHROPIC_BASE_URL":
+        return cleaned.rstrip("/").lower() != DEFAULT_ANTHROPIC_BASE_URL
+    if name in ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"):
+        return cleaned.lower() not in FALSE_VALUES
+    # Credentials: any value at all replaces the subscription login.
+    return True
+
+
 def billing_route_warning() -> str | None:
-    """Name the variables diverting model calls off the subscription, if any."""
-    present = [name for name in GATEWAY_ENV_VARS if os.environ.get(name)]
+    """Name the variables diverting model calls off the subscription, if any.
+
+    Presence is not diversion. ``ANTHROPIC_BASE_URL`` set to Anthropic's own
+    endpoint changes nothing, and flagging it trains the reader to ignore the
+    line that matters.
+    """
+    present = [
+        name
+        for name in GATEWAY_ENV_VARS
+        if _diverts(name, os.environ.get(name) or "")
+    ]
     if not present:
         return None
     return (
