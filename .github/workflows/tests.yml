@@ -1,0 +1,39 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements.txt
+
+      # No Claude Code CLI is installed here and nothing is logged in. The
+      # mock backend is what lets the whole pipeline run regardless.
+      - name: Environment check against the mock backend
+        run: python scripts/check_environment.py --backend mock
+
+      - name: Unit and integration tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Repository hygiene
+        run: |
+          python scripts/check_shareable_repo.py
+          python scripts/check_tracked_sensitive_names.py

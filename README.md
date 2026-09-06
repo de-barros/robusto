@@ -238,18 +238,27 @@ something it does not mean.
 
 ## Status
 
-The port is covered by 154 passing unit tests: the upstream suite, plus new
-coverage of the schema-contract layer, the LaTeX source front-end, and the
-authentication diagnosis.
+Covered by 208 passing tests: the upstream suite, the schema-contract layer,
+the LaTeX source front-end, the authentication and billing diagnosis, the mock
+backend, and an end-to-end run of the whole pipeline on a fixture manuscript.
 
-**No full end-to-end review has completed yet.** A first smoke run got as far
-as the deterministic parse and prompt rendering, both of which worked, then
-stopped at the preflight auditor because the CLI's token had expired. That
-failure is what prompted the authentication probe above. The 21-auditor panel,
-the schema-contract retry and the editor assembly remain unexercised against a
-real paper.
+**The pipeline has completed end to end, with the mock backend standing in for
+the model.** On a 17,600-word manuscript assembled from 22 included files: the
+deterministic parse (27 sections, 12 tables, 4 figures, no undefined labels),
+prompt rendering, the preflight gate, applicability routing, all twenty
+reviewers in parallel batches, the schema contract with its bounded retry,
+semantic validation, normalisation, editor assembly, the final-report check,
+and `--resume-after-preflight`. The retry path was exercised by forcing one
+reviewer to drift, and the fail-loud path by forcing one to drift twice.
 
-Treat the first successful run as a trial. If a reviewer fails, look in
+**What has not run is a real model call.** The one guarantee the port gives up,
+provider-enforced structured output, is replaced by a prompt contract, and
+whether a real reviewer honours that contract on a real paper is precisely what
+the mock cannot tell you. The first real run reached the preflight auditor
+before the CLI's session failed; that failure produced the authentication probe
+and the billing-route check above.
+
+Treat the first successful real run as a trial. If a reviewer fails, look in
 `work/<paper_id>/`: raw model output is kept beside every target file precisely
 so a failure stays inspectable.
 

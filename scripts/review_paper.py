@@ -871,22 +871,19 @@ def main() -> int:
         "--reasoning-effort",
         choices=REASONING_EFFORT_CHOICES,
         default="xhigh",
-        help=(
-            "Override the reasoning effort for substantive reviewers and the editor. "
-            "The recommended default is xhigh."
-        ),
+        help="Accepted for compatibility with the upstream Codex CLI and ignored: Claude Code has no reasoning-effort control.",
     )
     parser.add_argument(
         "--preflight-reasoning-effort",
         choices=REASONING_EFFORT_CHOICES,
         default="high",
-        help="Reasoning effort for parser-quality preflight. Default: high.",
+        help="Accepted for compatibility with the upstream Codex CLI and ignored: Claude Code has no reasoning-effort control.",
     )
     parser.add_argument(
         "--selector-reasoning-effort",
         choices=REASONING_EFFORT_CHOICES,
         default="high",
-        help="Reasoning effort for conservative reviewer applicability routing. Default: high.",
+        help="Accepted for compatibility with the upstream Codex CLI and ignored: Claude Code has no reasoning-effort control.",
     )
     parser.add_argument(
         "--max-parallel-reviewers",
@@ -1037,7 +1034,6 @@ def main() -> int:
         _route = billing_route_warning()
         if _route:
             print(f"[warn] {_route}")
-    print(f"[reasoning] preflight={args.preflight_reasoning_effort}, selector={args.selector_reasoning_effort}, reviewers/editor=n/a")
 
     if not args.resume_after_preflight:
         run_required(

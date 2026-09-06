@@ -78,7 +78,13 @@ suggest `--build` as a second pass when submission is close.
 Add `--paper-id <id>` when the filename is not the identifier you want.
 Add `--model <id>` to override `config/defaults.toml`.
 
-This takes a long time and runs many model calls. Say so before starting, and
+Add `--backend mock` to run the entire pipeline with no model calls. Every
+reply is synthetic and the report says so on its first line; the point is to
+confirm the parse is sound and the machinery holds before anything is spent.
+It takes about fifteen seconds. Offer it as a dry run when the user is unsure
+about the input, the cost, or whether the CLI is logged in.
+
+A real run takes a long time and makes many model calls. Say so before starting, and
 do not begin a run the user has not asked for.
 
 ## What comes back
