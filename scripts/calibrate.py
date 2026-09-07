@@ -285,6 +285,11 @@ def seed_broken_text_crossref(
         kind = str(chosen["kind"])
         label = int(chosen["label"])
         missing = highest[kind] + 40
+        # The point is a reference to something that is not there. If the paper
+        # happens to name that exhibit anyway, the edit would contradict
+        # nothing, so leave it alone rather than plant an inert defect.
+        if re.search(r"\b" + re.escape(f"{kind} {missing}") + r"(?![\d.])", text):
+            continue
         pattern = re.compile(r"\b" + re.escape(kind) + r"\s+" + str(label) + r"(?![\d.])")
         for match in pattern.finditer(text):
             # Skip the exhibit's own caption; renaming it is a different defect.

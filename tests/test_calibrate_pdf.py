@@ -135,6 +135,14 @@ class Seeding(PdfShapedParse):
         text = "Figure 5: Predicted versus estimated effects on test scores by arm"
         self.assertIsNone(seed_broken_crossref(text, self.parsed, self.rng()))
 
+    def test_a_label_the_paper_already_uses_is_not_planted(self) -> None:
+        """Repointing at something that exists would contradict nothing."""
+        text = (
+            "As shown in Figure 5, predicted and estimated effects agree closely here. "
+            "Figure 48 reports the same comparison for the kindergarten applicants."
+        )
+        self.assertIsNone(seed_broken_crossref(text, self.parsed, self.rng()))
+
     def test_a_citation_is_added_in_the_style_of_the_page(self) -> None:
         text = "We study private preschool markets in urban India, where fees vary widely."
         result = seed_uncited_reference(text, self.parsed, self.rng())
