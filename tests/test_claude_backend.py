@@ -246,9 +246,9 @@ class BillingRoute(unittest.TestCase):
             self.assertIn(name, warning)
 
     def test_the_token_value_is_never_echoed(self) -> None:
-        with self._env(ANTHROPIC_AUTH_TOKEN="sk-super-secret-value"):
+        with self._env(ANTHROPIC_AUTH_TOKEN="gateway-key-placeholder"):
             warning = billing_route_warning()
-        self.assertNotIn("sk-super-secret-value", warning)
+        self.assertNotIn("gateway-key-placeholder", warning)
 
     def test_empty_values_do_not_count_as_set(self) -> None:
         with self._env(ANTHROPIC_BASE_URL=""):

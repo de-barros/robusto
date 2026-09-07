@@ -2205,7 +2205,13 @@ class ReviewerConfigTests(unittest.TestCase):
 
         self.assertEqual(private_tracking_violations(paths), paths)
 
-    def test_sensitive_name_check_flags_assignments_without_secret_values(self) -> None:
+    def test_strict_mode_flags_assignments_without_secret_values(self) -> None:
+        """Upstream's posture, kept behind --strict.
+
+        Reporting every credential-named assignment is a reasonable thing to
+        read through before pushing and a poor CI gate, so it is opt-in and the
+        default judges the assigned value instead.
+        """
         root = self.config_path("sensitive_marker.txt").parent
         secret_file = root / "settings.py"
         normal_file = root / "notes.md"
@@ -2215,7 +2221,11 @@ class ReviewerConfigTests(unittest.TestCase):
         self.addCleanup(lambda: secret_file.exists() and secret_file.unlink())
         self.addCleanup(lambda: normal_file.exists() and normal_file.unlink())
 
-        self.assertEqual(suspicious_files(root, ["settings.py", "notes.md"]), ["settings.py"])
+        self.assertEqual(
+            suspicious_files(root, ["settings.py", "notes.md"], strict=True), ["settings.py"]
+        )
+        # The same placeholder is not credential-shaped, so the default is quiet.
+        self.assertEqual(suspicious_files(root, ["settings.py", "notes.md"]), [])
 
     def test_prior_run_aggregate_scores_sections(self) -> None:
         results = [
