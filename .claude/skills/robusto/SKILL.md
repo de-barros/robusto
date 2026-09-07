@@ -1,6 +1,6 @@
 ---
 name: robusto
-description: "Run a reproducible multi-agent audit of an academic economics paper PDF. Parses the PDF deterministically, routes 21 specialised auditors (numerical, identification, robustness, sample construction, power and multiple testing, data availability, devil's advocate, and more), validates every result against a schema, and assembles an editor's report. Use when asked to review, referee, audit, or stress-test a paper, manuscript, working paper, or preprint before submission. Do NOT use for a summary, a proofread, a rewrite, code review, or a non-academic document."
+description: "Run a reproducible multi-agent audit of an academic economics paper, from a PDF or directly from its LaTeX source. Parses the manuscript deterministically, routes a parser-quality preflight plus 20 specialised auditors (numerical, identification, robustness, sample construction, power and multiple testing, data availability, devil's advocate, and more), validates every result against a schema, and assembles an editor's report. Use when asked to review, referee, audit, or stress-test a paper, manuscript, working paper, or preprint before submission. Do NOT use for a summary, a proofread, a rewrite, code review, or a non-academic document."
 ---
 
 # robusto

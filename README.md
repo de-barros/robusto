@@ -3,31 +3,35 @@
 A reproducible multi-agent reviewer for academic economics papers, running on
 Claude Code.
 
-robusto is a port of [Ingar30/reviewer](https://github.com/Ingar30/reviewer)
-from the Codex CLI to `claude -p`, plus one additional reviewer. The parsing,
-routing, validation, normalisation and editor assembly are that project's work.
-See [NOTICE](NOTICE) for what came from where.
+robusto reads a manuscript, runs a panel of specialised auditors over it, and
+assembles one editor's report. Every finding is validated against a schema and
+names the artifact it rests on; a reviewer that cannot verify something is
+required to say so rather than guess.
+
+It is a port of [Ingar30/reviewer](https://github.com/Ingar30/reviewer) from the
+Codex CLI to `claude -p`, plus one additional reviewer. The parsing, routing,
+validation, normalisation and editor assembly are that project's work. See
+[NOTICE](NOTICE) for what came from where.
 
 ## What it does
 
-For each paper:
+1. Builds source-faithful artifacts from the manuscript: text, sections,
+   tables, figures, numbers, citations and cross-references, plus page
+   coordinates and images when working from a PDF.
+2. Runs a parser-quality preflight before any substantive review, so a bad
+   parse is caught rather than silently reviewed.
+3. Selects every reviewer whose remit is plausibly relevant, falling back to
+   the full roster when applicability is uncertain.
+4. Runs the selected auditors in parallel batches and validates every result.
+5. Normalises duplicate findings without discarding source evidence.
+6. Asks an editor to lead with concrete correctness problems, then broader
+   positioning.
+7. Writes the report to `outputs/<paper_id>/report.md`.
 
-1. builds source-faithful artifacts from the manuscript: text, tables,
-   figures, citations and cross-references, plus coordinates and page images
-   when working from a PDF
-2. runs a parser-quality preflight before any substantive review
-3. selects every reviewer whose remit is plausibly relevant, falling back to
-   the full roster when applicability is uncertain
-4. runs 21 specialised auditors and validates every structured result
-5. normalises clear duplicates without discarding source evidence
-6. asks an editor to lead with concrete correctness and auditability problems,
-   then broader positioning
-7. writes the report to `outputs/<paper_id>/report.md`
-
-The PDF parser is deterministic and local. It uses no hosted OCR, no document
-service and no model repair layer, and it never invents a missing sign, value,
-label, cell or formula. Unsafe artifacts are flagged so a reviewer can fall
-back to page images or answer `cannot_verify`.
+Both parsers are deterministic and local. They use no hosted OCR, no document
+service and no model repair layer, and they never invent a missing sign, value,
+label, cell or formula. Artifacts that cannot be recovered safely are flagged,
+so a reviewer falls back to other evidence or answers `cannot_verify`.
 
 The review itself is not local. Parsed manuscript text goes to Anthropic
 through the Claude Code CLI, and search-enabled reviewers send derived queries
@@ -36,24 +40,27 @@ terms permit that.**
 
 ## The reviewers
 
-Twenty inherited from upstream, covering parser quality, cross-references,
-source consistency, numerical checks, claim-evidence links, literature,
-references, grammar, identification, robustness, sample construction,
-abstract-conclusion consistency, limitations and external validity, model
-equations, theory logic, data availability and replication, institutional
-context, power and multiple testing, design and randomisation, and economic
-magnitude.
+One preflight auditor checks parse quality. Twenty substantive auditors then
+cover cross-references, source consistency, numerical checks, claim-evidence
+links, literature, references, grammar, identification, robustness, sample
+construction, abstract-conclusion consistency, limitations and external
+validity, model equations, theory logic, data availability and replication,
+institutional context, power and multiple testing, design and randomisation,
+and economic magnitude.
 
-One added here:
+Nineteen of the twenty are inherited from upstream. One is added here:
 
 **`devils_advocate_auditor`** builds the case *against* the paper. Every other
 reviewer hunts a class of defect; this one argues, as a hostile but competent
 referee would, and ranks objections by how likely they are to sink the paper.
-It is required to name the passage each objection attacks and to say what
-evidence would answer it, so that it produces arguments rather than doubts. A
-clean result is reported as clean and is not padded.
+It must name the passage each objection attacks and say what evidence would
+answer it, so it produces arguments rather than doubts. A clean result is
+reported as clean and is not padded.
 
-## Quick start
+## Requirements
+
+Python 3.12+, the [Claude Code CLI](https://claude.com/claude-code), and web
+search available to it.
 
 ```bash
 git clone https://github.com/de-barros/robusto.git
@@ -63,16 +70,7 @@ python -m unittest discover -s tests -t .
 python scripts/check_environment.py
 ```
 
-You need Python 3.12+, the [Claude Code CLI](https://claude.com/claude-code)
-installed and authenticated, and web search available to it.
-
-`check_environment.py` makes one small model call to confirm the CLI can
-actually authenticate. Presence on PATH does not imply a valid session, and an
-expired token otherwise surfaces only after the deterministic parse has run and
-the first reviewer has been launched. Pass `--offline` to skip the probe and
-check presence only, which is what CI wants.
-
-### Signing in the CLI
+### Signing in
 
 Reviewers run as separate `claude -p` processes, so the CLI needs its own
 credentials:
@@ -81,61 +79,52 @@ credentials:
 claude auth login --claudeai
 ```
 
-Once, on the machine that will run reviews, **in a real terminal window you
-can type into**. The login blocks on an interactive browser handoff, so it
-cannot be run through a Claude Code tool call or by asking an agent to run it;
-that hangs, or bounces with `Please run /login`. It uses your Claude
-subscription and bills the same way. Verify with `claude auth status`, which
-should report `loggedIn: true`.
+Once per machine, in a real terminal, since the login blocks on a browser
+handoff. Verify with `claude auth status`.
 
 **Being signed in to the Claude desktop app does not sign in the CLI.** The app
-keeps its OAuth session inside its own process and refreshes it there, so it
-never populates the CLI's credential store, and a subprocess cannot reach it.
-This is worth stating plainly because the failure is easy to misread: a CLI that
-was never signed in reports `OAuth session expired and could not be refreshed`
-and exits 0, which reads as a lapsed session rather than an absent one, and
-sends you looking for a login to restore that never existed. `check_environment.py`
-now asks `claude auth status` first, which is free and instant, and says so
-outright.
+keeps its OAuth session in its own process and never writes the CLI's
+credential store. A CLI that was never signed in reports `OAuth session expired
+and could not be refreshed` and exits 0, which reads like a lapsed session
+rather than an absent one, so check `claude auth status` before believing it.
+`check_environment.py` checks this first, and it is free and instant.
 
 ### Finding the CLI
 
-The binary is looked for in four places, in order: the `ROBUSTO_CLAUDE_BIN`
-environment variable, `CLAUDE_CODE_EXECPATH` (which the desktop app exports,
-naming the exact build it runs), `PATH`, then the directories the installers use
-(`~/.local/bin`, `~/.claude/local`, `%APPDATA%/npm`, `/usr/local/bin`,
-`/opt/homebrew/bin`). PATH is not a reliable proxy for installation: the native
-Windows installer writes `claude.exe` to `~/.local/bin` and leaves the persisted
-user PATH alone, which made a perfectly working install look absent. Set
-`ROBUSTO_CLAUDE_BIN` to a full path when several are installed.
+The binary is looked for in four places, in order: `ROBUSTO_CLAUDE_BIN`,
+`CLAUDE_CODE_EXECPATH` (exported by the desktop app), `PATH`, then the usual
+install directories (`~/.local/bin`, `~/.claude/local`, `%APPDATA%/npm`,
+`/usr/local/bin`, `/opt/homebrew/bin`). PATH alone is not a reliable proxy for
+installation, since some installers do not modify it. Set `ROBUSTO_CLAUDE_BIN`
+to a full path when several versions are installed.
 
 ### Which account pays
 
-Reviewers run as separate `claude -p` processes and inherit the environment of
-whatever launched the pipeline. If that environment sets `ANTHROPIC_BASE_URL`,
-`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_CUSTOM_HEADERS`,
-`CLAUDE_CODE_USE_BEDROCK` or `CLAUDE_CODE_USE_VERTEX`, then every call in the
-panel bills to that endpoint rather than to your Claude subscription. A gateway
-configured for interactive use captures the whole run silently.
+Reviewers inherit the environment of whatever launched the pipeline. If that
+environment sets `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`,
+`ANTHROPIC_API_KEY`, `ANTHROPIC_CUSTOM_HEADERS`, `CLAUDE_CODE_USE_BEDROCK` or
+`CLAUDE_CODE_USE_VERTEX`, every call bills to that endpoint rather than to your
+Claude subscription, and a gateway configured for interactive use captures the
+whole run silently.
 
-`check_environment.py` and the run header both name any such variable they find.
-Neither treats it as an error, since routing through a gateway is a legitimate
-choice; the point is that a twenty-call run should never be ambiguous about
-which account it is spending from. Note that Claude Code reads these from
-`~/.claude/settings.json` at launch as well as from the shell.
+`check_environment.py` and the run header name any such variable they find.
+Neither treats it as an error, since a gateway is a legitimate choice; the point
+is that a long run should never be ambiguous about which account it spends
+from. Claude Code reads these from `~/.claude/settings.json` as well as the
+shell.
 
 ## Three ways in
 
-Exactly one of these is required.
+Exactly one is required.
 
 ```bash
-# 1. a finished PDF
+# a finished PDF
 python scripts/review_paper.py --pdf "inputs/my-paper.pdf"
 
-# 2. compile the manuscript first, then review what comes out
+# compile the manuscript first, then review what comes out
 python scripts/review_paper.py --build "path/to/manuscript.tex"
 
-# 3. review the LaTeX source directly, without typesetting
+# review the LaTeX source directly, without typesetting
 python scripts/review_paper.py --source "path/to/manuscript.tex"
 ```
 
@@ -152,40 +141,44 @@ They are not interchangeable, and the difference is not convenience.
 | **figure legibility after reduction** | **visible** | **invisible** |
 | page numbers in findings | present | null; findings anchor on section and quoted text |
 
-Use `--source` when the manuscript lives in a repository and you care about
-whether the numbers, references and claims hang together. Use `--build` before
-submitting, when you care about what the referee actually receives: a table
-running off the page or axis labels below a journal's point floor exist only
-after typesetting, and source mode cannot see them.
+Use `--source` when the manuscript lives in a repository and you care whether
+the numbers, references and claims hang together. Use `--build` before
+submitting, when you care what the referee actually receives: a table running
+off the page, or axis labels below a journal's point floor, exist only after
+typesetting.
 
 `--build` needs `latexmk` on PATH. `--source` takes a root .tex file, or a
 directory containing exactly one file with a documentclass.
 
-Source mode substitutes value macros before anything reads the text. Economics
-manuscripts routinely inject their results from a generated file of
-definitions, so the prose says "the coefficient is $\effect$" and the number
-lives elsewhere. Left alone, that reads as number-free prose: the numerical
-auditor sees a sentence with nothing in it to check, reports nothing, and
-nothing errors to say the audit was blind. Precedence follows LaTeX, so a
-generated definition beats the placeholder a manuscript keeps so it still
-compiles before results exist; getting that backwards would put "[run
-master.do]" into the prose as though it were a finding. Macros taking
-arguments and macros whose body holds a real command are left alone, since
-those are formatting rather than values. What was substituted is recorded in
-`parsed/macro_expansions.json`, so a finding resting on an expanded number can
-be traced to the definition it came from. Section and subsection titles are
-extracted with the same brace-balancing, so a `\label{...}` nested inside a
-`\section{...}` argument is captured into its own `section_label` field
-instead of truncating the visible title.
+### What source mode does with generated values
+
+Economics manuscripts routinely inject results from a generated file of macro
+definitions, so the prose reads "the coefficient is `$\effect$`" while the
+number lives elsewhere. Source mode substitutes those values before anything
+reads the text; without it, the prose is number-free and the numerical auditor
+has nothing to check, with nothing to indicate the audit was blind.
+
+Precedence follows LaTeX, so a generated definition beats a `\providecommand`
+placeholder kept for compiling before results exist. Macros taking arguments,
+and macros whose body holds a real command, are left alone as formatting rather
+than values. Substitutions are recorded in `parsed/macro_expansions.json`, so a
+finding resting on an expanded number can be traced to its definition.
+
+Section titles are extracted with balanced braces, so a `\label{...}` nested
+inside `\section{...}` is captured into a `section_label` field instead of
+truncating the title.
+
+## Output
 
 The report lands at `outputs/<paper_id>/report.md`. Intermediate artifacts,
 prompts, logs, reviewer outputs, routing decisions and the editor bundle are
-written under `work/<paper_id>/`, and `manifest.json` there records which mode
-ran, with source mode listing its own limitations explicitly.
+written under `work/<paper_id>/`, where `parsed/manifest.json` records which
+mode ran and lists that mode's limitations explicitly.
 
-Override the model with `--model`; the default is in `config/defaults.toml`.
+Raw model output is kept beside every validated file, so a failed reviewer
+stays inspectable.
 
-## Proving the pipeline without spending a token
+## A dry run that costs nothing
 
 ```bash
 python scripts/review_paper.py --backend mock --source "path/to/manuscript.tex" --paper-id smoke
@@ -193,73 +186,66 @@ python scripts/review_paper.py --backend mock --source "path/to/manuscript.tex" 
 
 `--backend mock` replaces every model call with `scripts/mock_claude.py`, which
 answers from the prompt alone with synthetic, schema-valid output. Everything
-else runs for real on your actual manuscript: the deterministic parse, prompt
-rendering, the preflight gate, applicability routing, all twenty reviewers in
-parallel batches, the schema contract and its bounded retry, semantic
-validation, normalisation, editor assembly, and the final-report check. A full
-run takes about fifteen seconds and costs nothing.
+else runs for real on your manuscript: the parse, prompt rendering, the
+preflight gate, routing, all reviewers, the schema contract and its retry,
+validation, normalisation, editor assembly and the final-report check. It takes
+about fifteen seconds.
 
-Use it before a real run to confirm the parse is sound and the machinery holds,
-and in CI, where no CLI is logged in. A mock report cannot be mistaken for a
-review: it opens with a banner saying so, every finding names the mock, and
-`run_manifest.json` records `"backend": "mock"`.
+Use it to confirm the parse is sound before spending anything, and in CI, where
+no CLI is logged in. A mock report cannot be mistaken for a review: it opens
+with a banner saying so, every finding names the mock, and `run_manifest.json`
+records `"backend": "mock"`.
 
-Two knobs reach the paths a clean run never touches:
+Two environment variables reach paths a clean run never touches:
 
 ```bash
 ROBUSTO_MOCK_DRIFT=numerical_auditor   # first reply breaks the contract; the retry must recover
 ROBUSTO_MOCK_FAIL=robustness_auditor   # every reply breaks it; the run must stop, naming the reviewer
 ```
 
-`ROBUSTO_MOCK_FINDINGS=N` sets findings per reviewer (default 2) and
-`ROBUSTO_MOCK_SKIP=name,name` makes the selector skip optional reviewers.
-`check_environment.py --backend mock` confirms the mock answers the probe.
+`ROBUSTO_MOCK_FINDINGS=N` sets findings per reviewer and `ROBUSTO_MOCK_SKIP`
+makes the selector skip reviewers.
 
-`tests/test_mock_pipeline.py` runs this end to end on a tiny fixture manuscript,
-including `--resume-after-preflight` and both misbehaviour paths.
+## Starting small on a real paper
 
-## The first real run, one call at a time
-
-The mock proves everything except the one thing that matters most: whether a
-real reviewer honours the schema contract on your paper. That can be settled
-for the price of a single model call.
+A full panel is a long run and many model calls. To test a new manuscript for
+the price of one call:
 
 ```bash
 python scripts/review_paper.py --source "path/to/manuscript.tex" --paper-id first --stop-after preflight
 ```
 
-`--stop-after preflight` runs the parse and the parser-quality auditor, then
-stops cleanly. One reviewer has now answered a real prompt against a real
-manuscript and its reply has been through the contract, the validator and the
-gate. `--stop-after selection` goes one call further and shows you which of the
-twenty reviewers would run. Either way, continue with:
+That runs the parse and the parser-quality auditor, then stops cleanly, having
+put one real reply through the contract, the validator and the gate.
+`--stop-after selection` goes one call further and shows which reviewers would
+run. Either continues with:
 
 ```bash
 python scripts/review_paper.py --source "path/to/manuscript.tex" --paper-id first --resume-after-preflight
 ```
 
-Resume reuses the parsed artifacts and the validated preflight output; only the
-selector runs again. The manifest records where a run stopped.
+Resume reuses the parsed artifacts and the validated preflight output. The
+manifest records where a run stopped.
 
 ## Using it as a Claude Code skill
 
 The repository ships a skill at `.claude/skills/robusto/`, which Claude Code
-picks up automatically when you work inside this repo. To reach it from any
-directory, install it for your user:
+picks up automatically inside this repo. To reach it from anywhere:
 
 ```bash
 mkdir -p ~/.claude/skills
 cp -r .claude/skills/robusto ~/.claude/skills/
 ```
 
-Then ask for a review from anywhere: *"review inputs/my-paper.pdf with
-robusto"*, or just *"referee this paper"* with a PDF to hand.
+Then ask for a review in plain language: *"review inputs/my-paper.pdf with
+robusto"*, *"referee the manuscript in paper/main.tex"*, or just *"stress-test
+this paper before I submit it"*.
 
 The skill is a thin wrapper, so **the clone still has to exist** with its
-virtual environment set up; the skill finds it rather than replacing it. It
-looks in `$ROBUSTO_HOME` first, then `~/Documents/GitHub/robusto`,
-`~/GitHub/robusto`, `~/code/robusto`, `~/src/robusto`, `~/robusto`, and finally
-the working directory. If your clone lives somewhere else, set the variable:
+virtual environment; the skill finds it rather than replacing it. It looks in
+`$ROBUSTO_HOME` first, then `~/Documents/GitHub/robusto`, `~/GitHub/robusto`,
+`~/code/robusto`, `~/src/robusto`, `~/robusto`, and finally the working
+directory. If your clone lives elsewhere:
 
 ```bash
 export ROBUSTO_HOME="/path/to/robusto"     # add to ~/.bashrc or ~/.zshrc
@@ -270,7 +256,7 @@ export ROBUSTO_HOME="/path/to/robusto"     # add to ~/.bashrc or ~/.zshrc
 ```
 
 Reports are written inside the repo, at `outputs/<paper_id>/report.md`, not in
-whatever directory you were standing in.
+the directory you were standing in.
 
 ## How the port works, and what it costs
 
@@ -293,41 +279,33 @@ once more with the validation errors quoted back.
 **This is the one real cost of the port.** Provider-side constrained decoding
 cannot drift; a prompt contract can. The mitigation is that nothing downstream
 trusts the model: `finalize_structured_output` refuses anything that does not
-validate, `validate_review_json.py` then applies the semantic rules on top, and
-a reviewer that will not conform fails loudly instead of poisoning the report.
+validate, `validate_review_json.py` applies the semantic rules on top, and a
+reviewer that will not conform fails loudly instead of poisoning the report.
 
 Reviewers run with `Read`, `Grep`, `Glob` and optionally `WebSearch`. No write
-tool is ever granted, which is asserted in the test suite.
+tool is ever granted, which the test suite asserts.
 
-`--reasoning-effort` is accepted so scripts and habits carry over, but Claude
-Code has no such control, so it is ignored rather than translated into
+`--reasoning-effort` is accepted so existing scripts and habits carry over, but
+Claude Code has no such control, so it is ignored rather than translated into
 something it does not mean.
 
 ## Status
 
-Covered by 254 passing tests: the upstream suite, the schema-contract layer,
-the LaTeX source front-end, the authentication and billing diagnosis, the mock
-backend, and an end-to-end run of the whole pipeline on a fixture manuscript.
+254 passing tests, run on Linux and Windows in CI: the upstream suite, the
+schema-contract layer, the LaTeX source front-end, the environment and
+authentication checks, the mock backend, and an end-to-end pipeline run on a
+fixture manuscript.
 
-**The pipeline has completed end to end, with the mock backend standing in for
-the model.** On a 17,600-word manuscript assembled from 22 included files: the
-deterministic parse (27 sections, 12 tables, 4 figures, no undefined labels),
-prompt rendering, the preflight gate, applicability routing, all twenty
-reviewers in parallel batches, the schema contract with its bounded retry,
-semantic validation, normalisation, editor assembly, the final-report check,
-and `--resume-after-preflight`. The retry path was exercised by forcing one
-reviewer to drift, and the fail-loud path by forcing one to drift twice.
+The pipeline has completed end to end against a real model. On a 31,600-word
+manuscript assembled from 95 included files (56 sections, 25 tables, 9 figures,
+no undefined labels), nineteen reviewers ran in parallel batches over about 80
+minutes and every one returned schema-valid output on the first attempt. The
+retry and fail-loud branches, which a clean run never reaches, are covered by
+the mock backend instead.
 
-**What has not run is a real model call.** The one guarantee the port gives up,
-provider-enforced structured output, is replaced by a prompt contract, and
-whether a real reviewer honours that contract on a real paper is precisely what
-the mock cannot tell you. The first real run reached the preflight auditor
-before the CLI's session failed; that failure produced the authentication probe
-and the billing-route check above.
-
-Treat the first successful real run as a trial. If a reviewer fails, look in
-`work/<paper_id>/`: raw model output is kept beside every target file precisely
-so a failure stays inspectable.
+This has been exercised on a small number of manuscripts. The prompt contract
+holding is an empirical result, not a guarantee, which is why validation is
+enforced at three layers downstream and why raw model output is always kept.
 
 ## Licence
 
