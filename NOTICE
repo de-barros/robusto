@@ -49,42 +49,42 @@ Substantially derived from
 Ideas taken, text not taken
 ---------------------------
 
-The devil's advocate reviewer is an idea borrowed from the projects below.
-None of their text appears in this repository; the prompt was written from
-scratch for this roster and this schema. Two of the three carry no licence at
-all, so copying from them would not have been permissible, and the fourth is
-CC BY-NC, which would have forced this repository to be non-commercial.
+Two ideas in this repository came from other projects: the devil's advocate
+reviewer, and the seeded-defect calibration. None of their text appears here.
+Both prompts and the calibration implementation were written from scratch for
+this roster and this schema.
+
+Licences were checked against each repository on 2026-09-07, not against local
+copies. Of the four below, one is CC BY-NC, which would have forced this
+repository to be non-commercial; two state no licence at all, so copying would
+not have been permissible; and one grants use informally without carrying a
+licence file. Nothing was copied from any of them regardless.
 
   Imbad0202/academic-research-skills — https://github.com/Imbad0202/academic-research-skills
   CC BY-NC 4.0, Copyright (c) 2026 Cheng-I Wu
-  Source of the devil's-advocate idea: a panel member whose remit is to argue
-  against the paper rather than to look for a class of defect.
-
-  nikhilklath/skills — https://github.com/nikhilklath/skills
-  No licence stated. Its review-paper skill frames a pre-submission review as
-  prioritised findings across contribution, identification, consistency, math,
-  exhibits and prose. That framing informed how the devil's advocate is asked
-  to rank what it finds.
+  Two ideas, both used without any of its text. First, the devil's advocate:
+  a panel member whose remit is to argue against the paper rather than to look
+  for a class of defect. Second, its calibration mode: the principle that a
+  reviewer's own error profile should be measured rather than assumed. The
+  metric here is different, because that project scores accept/reject
+  decisions against gold labels and robusto has no decision to score, so
+  robusto measures recall on defects it plants itself. The principle is theirs.
 
   scunning1975/MixtapeTools — https://github.com/scunning1975/MixtapeTools
-  No licence stated. Its Referee 2 persona is the source of the stance that a
-  review is an audit that files a report against a checklist, rather than a
+  No licence file; the repository states "Use freely. Attribution appreciated
+  but not required." Its Referee 2 skill is the source of the stance that a
+  review is an audit filing a report against a checklist, rather than a
   reaction. Upstream already worked this way; the resemblance is noted because
-  the idea was consulted.
+  the idea was consulted. Referee 2 was also consulted when documenting how
+  robusto differs from a code-and-replication audit, since it audits the
+  pipeline behind a paper rather than the manuscript.
 
-  Imbad0202/academic-research-skills — https://github.com/Imbad0202/academic-research-skills
-  CC BY-NC. No code or text was copied; that licence would be incompatible
-  with this repository's. Its calibration mode is the source of one idea used
-  here: that a reviewer's own error profile should be measured rather than
-  assumed. The implementation and the metric are different, because that
-  project scores accept/reject decisions against gold labels and robusto emits
-  findings rather than decisions, so robusto measures recall on defects it
-  plants itself. The idea is theirs.
-
-  scunning1975/MixtapeTools — https://github.com/scunning1975/MixtapeTools
-  No licence stated, so nothing was copied. Consulted when documenting how
-  robusto differs from a code-and-replication audit; its referee2 skill audits
-  the pipeline behind a paper rather than the manuscript.
+  nikhilklath/skills
+  A private repository, so the link is omitted: it would 404 for any reader
+  without access. No licence stated. Its review-paper skill frames a
+  pre-submission review as prioritised findings across contribution,
+  identification, consistency, math, exhibits and prose. That framing informed
+  how the devil's advocate is asked to rank what it finds.
 
   lcrawfurd/claude-skills — https://github.com/lcrawfurd/claude-skills
   No licence stated. Consulted for the same persona in a shorter form.

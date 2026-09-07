@@ -73,11 +73,11 @@ need checked.
 | | robusto | referee2 | academic-paper-reviewer |
 |---|---|---|---|
 | Audits | the manuscript text | the code that produced the numbers | the paper as a scholarly contribution |
-| Runs your analysis | no | **yes**, in R, Stata and Python | no |
+| Runs your analysis | no | **yes** — replicates the pipeline in two further languages among R, Stata and Python |  no |
 | Input | PDF or LaTeX source, deterministically parsed | the project repository | the paper |
-| Structure | 20 auditors in parallel, schema-validated findings | one auditor, five sequential audits | seven agents in phases, personas configured per paper |
-| Venue | not modelled | not modelled | central; journal tier is inferred and calibrates rigour |
-| Verdict | none, by design | Accept / Minor / Major Revision | rubric scores and an editorial decision |
+| Structure | 20 auditors in parallel, schema-validated findings | one auditor, five sequential audits | five review seats, plus a field analyst and an editorial synthesiser |
+| Venue | not modelled | not modelled | a journal-fit review seat, informed by tiered journal lists |
+| Verdict | none, by design | Accept / Minor / Major Revisions / Reject | narrative judgements rather than numeric scores, plus an editorial decision |
 | Scope | economics | empirical projects; also slide decks | field-general |
 | Distinctive | seeded-defect calibration, mock backend | cross-language replication | re-review of an R&R, Socratic mode, self-calibration |
 
@@ -99,6 +99,10 @@ robusto's calibration below is adapted from academic-paper-reviewer's
 calibration mode. The idea, that a reviewer's own error profile should be
 measured rather than assumed, is theirs; the metric differs because the two
 tools emit different things.
+
+This comparison was checked against each project's repository on 2026-09-07.
+All three are moving targets, so treat it as a snapshot and check upstream if a
+detail matters to a decision.
 
 ## Requirements
 
