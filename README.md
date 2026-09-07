@@ -81,8 +81,12 @@ credentials:
 claude auth login --claudeai
 ```
 
-Once, on the machine that will run reviews. It uses your Claude subscription
-and bills the same way.
+Once, on the machine that will run reviews, **in a real terminal window you
+can type into**. The login blocks on an interactive browser handoff, so it
+cannot be run through a Claude Code tool call or by asking an agent to run it;
+that hangs, or bounces with `Please run /login`. It uses your Claude
+subscription and bills the same way. Verify with `claude auth status`, which
+should report `loggedIn: true`.
 
 **Being signed in to the Claude desktop app does not sign in the CLI.** The app
 keeps its OAuth session inside its own process and refreshes it there, so it
@@ -156,6 +160,20 @@ after typesetting, and source mode cannot see them.
 
 `--build` needs `latexmk` on PATH. `--source` takes a root .tex file, or a
 directory containing exactly one file with a documentclass.
+
+Source mode substitutes value macros before anything reads the text. Economics
+manuscripts routinely inject their results from a generated file of
+definitions, so the prose says "the coefficient is $\effect$" and the number
+lives elsewhere. Left alone, that reads as number-free prose: the numerical
+auditor sees a sentence with nothing in it to check, reports nothing, and
+nothing errors to say the audit was blind. Precedence follows LaTeX, so a
+generated definition beats the placeholder a manuscript keeps so it still
+compiles before results exist; getting that backwards would put "[run
+master.do]" into the prose as though it were a finding. Macros taking
+arguments and macros whose body holds a real command are left alone, since
+those are formatting rather than values. What was substituted is recorded in
+`parsed/macro_expansions.json`, so a finding resting on an expanded number can
+be traced to the definition it came from.
 
 The report lands at `outputs/<paper_id>/report.md`. Intermediate artifacts,
 prompts, logs, reviewer outputs, routing decisions and the editor bundle are
@@ -284,7 +302,7 @@ something it does not mean.
 
 ## Status
 
-Covered by 231 passing tests: the upstream suite, the schema-contract layer,
+Covered by 246 passing tests: the upstream suite, the schema-contract layer,
 the LaTeX source front-end, the authentication and billing diagnosis, the mock
 backend, and an end-to-end run of the whole pipeline on a fixture manuscript.
 

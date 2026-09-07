@@ -24,8 +24,10 @@ from preprocess_source import (  # noqa: E402
     collect_references,
     collect_sections,
     collect_tables,
+    expand_value_macros,
     first_caption,
     flatten,
+    macro_definitions,
     strip_comments,
 )
 
@@ -173,6 +175,165 @@ class References(unittest.TestCase):
             bib.write_text("@article{k, title={A {Braced} Title}, year={2020}}\n", encoding="utf-8")
             got = collect_references([bib], {"k"})
             self.assertIn("{Braced}", got[0]["raw"])
+
+
+class ValueMacros(unittest.TestCase):
+    """Expansion of generated value macros.
+
+    Economics manuscripts routinely inject their results as a Stata-generated
+    file of `\\newcommand`s. Without expansion the prose carries no numbers at
+    all, so the numerical auditor reads a sentence with nothing in it to check
+    and reports nothing wrong. Nothing errors; the audit is simply blind.
+    """
+
+    def expand(self, text: str) -> tuple[str, dict]:
+        values, spans = macro_definitions(text)
+        return expand_value_macros(text, values, spans)
+
+    def test_a_value_reaches_the_prose(self) -> None:
+        text = (
+            "\\newcommand{\\effect}{-0.17}\n"
+            "The coefficient is $\\effect$ standard deviations.\n"
+        )
+        expanded, counts = self.expand(text)
+        self.assertIn("$-0.17$ standard deviations", expanded)
+        self.assertEqual(counts, {"effect": 1})
+
+    def test_the_definition_is_not_rewritten(self) -> None:
+        """The bug this test exists for.
+
+        A definition contains the name it defines, so any substitution pass
+        that does not skip definition spans turns
+        `\\newcommand{\\effect}{-0.17}` into `\\newcommand{-0.17}{-0.17}`,
+        which destroys the definition and every later reader of it.
+        """
+        text = (
+            "\\newcommand{\\effect}{-0.17}\n"
+            "The coefficient is $\\effect$ standard deviations.\n"
+        )
+        expanded, _ = self.expand(text)
+        self.assertIn("\\newcommand{\\effect}{-0.17}", expanded)
+        self.assertNotIn("\\newcommand{-0.17}", expanded)
+
+    def test_a_real_definition_beats_the_providecommand_fallback(self) -> None:
+        """Manuscripts keep a placeholder so they compile before results exist.
+
+        Getting this backwards is worse than not expanding at all: the prose
+        would read "the coefficient is [run master.do]", which looks like
+        content rather than like a missing value.
+        """
+        text = (
+            "\\providecommand{\\effect}{\\textbf{[run master.do]}}\n"
+            "\\newcommand{\\effect}{-0.17}\n"
+            "The coefficient is $\\effect$.\n"
+        )
+        expanded, _ = self.expand(text)
+        self.assertIn("The coefficient is $-0.17$.", expanded)
+        self.assertNotIn("[run master.do]", expanded.split("\n", 1)[1])
+
+    def test_a_providecommand_alone_is_used_when_nothing_overrides_it(self) -> None:
+        text = "\\providecommand{\\n}{1,240}\nWe study $\\n$ schools.\n"
+        expanded, _ = self.expand(text)
+        self.assertIn("We study $1,240$ schools.", expanded)
+
+    def test_macros_taking_arguments_are_left_alone(self) -> None:
+        """A macro with arguments is a formatting helper, not a value."""
+        text = "\\newcommand{\\se}[1]{(#1)}\nThe estimate is 0.4 \\se{0.1}.\n"
+        expanded, counts = self.expand(text)
+        self.assertIn("\\se{0.1}", expanded)
+        self.assertEqual(counts, {})
+
+    def test_formatting_macros_are_left_alone(self) -> None:
+        """A body holding a real command is layout, not a reported figure."""
+        text = (
+            "\\renewcommand{\\thetable}{A\\arabic{table}}\n"
+            "\\renewcommand{\\contentsname}{Contents}\n"
+            "See \\thetable{} for details.\n"
+        )
+        expanded, counts = self.expand(text)
+        self.assertIn("\\thetable", expanded)
+        self.assertNotIn("thetable", counts)
+
+    def test_a_value_defined_from_another_value_resolves(self) -> None:
+        text = "\\newcommand{\\a}{0.5}\n\\newcommand{\\b}{\\a}\nResult $\\b$.\n"
+        expanded, _ = self.expand(text)
+        self.assertIn("Result $0.5$.", expanded)
+
+    def test_a_cyclic_definition_terminates(self) -> None:
+        """Bounded passes, so a cycle cannot spin or grow without limit."""
+        text = "\\newcommand{\\a}{\\b}\n\\newcommand{\\b}{\\a}\nValue $\\a$.\n"
+        expanded, _ = self.expand(text)
+        self.assertLess(len(expanded), 400)
+
+    def test_a_longer_name_is_not_shadowed_by_a_shorter_one(self) -> None:
+        text = "\\newcommand{\\ab}{1}\n\\newcommand{\\abc}{2}\nBoth $\\ab$ and $\\abc$.\n"
+        expanded, _ = self.expand(text)
+        self.assertIn("Both $1$ and $2$.", expanded)
+
+    def test_a_macro_is_not_matched_inside_a_longer_name(self) -> None:
+        text = "\\newcommand{\\ab}{1}\nThe \\abdefined command stays.\n"
+        expanded, _ = self.expand(text)
+        self.assertIn("\\abdefined", expanded)
+
+    def test_an_overlong_body_is_treated_as_prose(self) -> None:
+        text = "\\newcommand{\\blurb}{" + "word " * 40 + "}\nSee $\\blurb$.\n"
+        expanded, counts = self.expand(text)
+        self.assertEqual(counts, {})
+        self.assertIn("$\\blurb$", expanded)
+
+
+class FloatEnvironments(unittest.TestCase):
+    """Tables and figures live in more environments than the plain float.
+
+    Missing `sidewaystable` and `longtable` silently shrank Avanti's inventory
+    from 25 tables to 21, so four exhibits were invisible to every auditor.
+    """
+
+    def test_every_table_environment_is_collected(self) -> None:
+        text = (
+            "\\begin{table}\\caption{One}\\label{t:1}\\end{table}\n"
+            "\\begin{table*}\\caption{Two}\\label{t:2}\\end{table*}\n"
+            "\\begin{sidewaystable}\\caption{Three}\\label{t:3}\\end{sidewaystable}\n"
+            "\\begin{longtable}\\caption{Four}\\label{t:4}\\end{longtable}\n"
+        )
+        tables = collect_tables(text)
+        self.assertEqual(len(tables), 4)
+        self.assertEqual(
+            [t["environment"] for t in tables],
+            ["table", "table*", "sidewaystable", "longtable"],
+        )
+        self.assertEqual([t["table_label"] for t in tables], ["t:1", "t:2", "t:3", "t:4"])
+
+    def test_tables_are_numbered_in_document_order(self) -> None:
+        text = (
+            "\\begin{longtable}\\label{first}\\end{longtable}\n"
+            "\\begin{table}\\label{second}\\end{table}\n"
+        )
+        tables = collect_tables(text)
+        self.assertEqual([t["table_label"] for t in tables], ["first", "second"])
+        self.assertEqual([t["table_id"] for t in tables], ["T001", "T002"])
+
+    def test_figure_environments_are_collected(self) -> None:
+        text = (
+            "\\begin{figure}\\includegraphics{a.pdf}\\label{f:1}\\end{figure}\n"
+            "\\begin{sidewaysfigure}\\includegraphics{b.pdf}\\label{f:2}\\end{sidewaysfigure}\n"
+        )
+        figures = collect_figures(text)
+        self.assertEqual(len(figures), 2)
+        self.assertEqual([f["environment"] for f in figures], ["figure", "sidewaysfigure"])
+
+    def test_source_mode_claims_no_extracted_images(self) -> None:
+        """Nothing is written to parsed/figures/, so the count must be zero.
+
+        Reporting the \\includegraphics count as embedded_image_count invited a
+        reviewer to cite an extracted image that does not exist.
+        """
+        text = "\\begin{figure}\\includegraphics{a.pdf}\\includegraphics{b.pdf}\\end{figure}\n"
+        figure = collect_figures(text)[0]
+        self.assertEqual(figure["embedded_image_count"], 0)
+        self.assertEqual(figure["embedded_images"], [])
+        self.assertEqual(figure["graphics_count"], 2)
+        self.assertEqual(figure["graphics"], ["a.pdf", "b.pdf"])
 
 
 if __name__ == "__main__":

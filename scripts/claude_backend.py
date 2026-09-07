@@ -471,6 +471,10 @@ def cli_login_hint(status: dict | None = None) -> str | None:
         "",
         "    claude auth login --claudeai",
         "",
+        "Run that in a real terminal window you can type into. The login blocks "
+        "on an interactive browser handoff, so it cannot be done through a "
+        "Claude Code tool call, and asking an agent to run it will hang or "
+        "bounce with \"Please run /login\".",
     ]
     if os.environ.get("CLAUDE_CODE_ENTRYPOINT") or os.environ.get("CLAUDECODE"):
         lines.append(

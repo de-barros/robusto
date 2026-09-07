@@ -49,7 +49,9 @@ Confirm three things, and stop if any fails.
    repo has a `.venv`, use its interpreter rather than the system one.
 
    If it reports the CLI is not signed in, relay that: the user runs
-   `claude auth login --claudeai` once. Do not treat this as a bug or go
+   `claude auth login --claudeai` once, in a real terminal window. Do not run
+   it yourself and do not offer to: it blocks on an interactive browser
+   handoff, so a tool call hangs or bounces with `Please run /login`. Do not treat this as a bug or go
    looking for a broken session, and do not suggest it can be worked around.
    Reviewers run as separate `claude -p` processes, and being signed in to the
    Claude desktop app does not sign in the CLI: the app holds its OAuth session

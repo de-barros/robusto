@@ -276,15 +276,161 @@ def collect_references(bib_paths: list[Path], cited: set[str]) -> list[dict]:
     return references
 
 
-def latex_floats(text: str, kind: str) -> list[tuple[int, str]]:
-    """(start index, body) for each float of `kind`."""
-    out = []
-    for m in re.finditer(rf"\\begin\{{{kind}\}}", text):
-        end = text.find(rf"\end{{{kind}}}", m.end())
-        if end == -1:
+#: Zero-argument macro definitions, in both spellings LaTeX accepts. The two
+#: forms are spelled out rather than made optional with `\{?...\}?`, because an
+#: optional brace lets the engine backtrack past it and satisfy the `(?!\[)`
+#: guard against the closing brace, so `\newcommand{\se}[1]{(#1)}` was read as
+#: a value and every `\se` in the document became `(#1)`.
+MACRO_DEF = re.compile(
+    r"\\(new|renew|provide)command\*?\s*"
+    r"(?:\{\\([A-Za-z@]+)\}|\\([A-Za-z@]+))"
+    r"\s*(?!\[)"
+)
+
+#: A body holding a real command is a formatting macro; a body holding a number,
+#: a word, or a percent sign is a value. `\%`, `\$` and spacing escapes are
+#: allowed through because generated value files use them.
+NON_VALUE_BODY = re.compile(r"\\[A-Za-z]{3,}")
+
+#: Long bodies are prose or layout, not a reported figure.
+MAX_VALUE_BODY = 120
+
+#: Expansion passes, so a value macro defined in terms of another resolves.
+#: Bounded because a cyclic definition would otherwise spin forever.
+MACRO_PASSES = 3
+
+
+def macro_definitions(text: str) -> tuple[dict[str, str], list[tuple[int, int]]]:
+    """Value macros the document defines, and the spans that define them.
+
+    Returns `(values, spans)`. The spans matter as much as the values: a
+    definition names its own macro, so substituting inside one would rewrite
+    `\\newcommand{\\x}{0.06}` into `\\newcommand{0.06}{0.06}`.
+
+    Precedence follows LaTeX. `\\providecommand` only defines what is not
+    already defined, so a generated `\\newcommand` beats the `\\providecommand`
+    fallback a manuscript keeps so it still compiles before the numbers are
+    built. Among real definitions the last wins, matching `\\renewcommand`.
+    """
+    values: dict[str, str] = {}
+    provided: dict[str, str] = {}
+    spans: list[tuple[int, int]] = []
+    for match in MACRO_DEF.finditer(text):
+        kind = match.group(1)
+        name = match.group(2) or match.group(3)
+        brace = text.find("{", match.end())
+        if brace == -1:
             continue
-        out.append((m.start(), text[m.end() : end]))
-    return out
+        close = match_group(text, brace)
+        body = text[brace + 1 : close - 1].strip()
+        spans.append((match.start(), close))
+        if len(body) > MAX_VALUE_BODY or NON_VALUE_BODY.search(body):
+            continue
+        if kind == "provide":
+            provided.setdefault(name, body)
+        else:
+            values[name] = body
+    for name, body in provided.items():
+        values.setdefault(name, body)
+    return values, spans
+
+
+def macro_pattern(names) -> re.Pattern | None:
+    """Match any of `names` used as a macro, longest first so prefixes lose."""
+    if not names:
+        return None
+    alternatives = "|".join(sorted(map(re.escape, names), key=len, reverse=True))
+    return re.compile(r"\\(" + alternatives + r")(?![A-Za-z@])")
+
+
+def resolve_nested(values: dict[str, str]) -> dict[str, str]:
+    """Resolve values written in terms of other values, before touching the text.
+
+    Doing this here rather than by re-running over the document is what keeps
+    definitions safe: a definition still contains the name it defines, so a
+    second unguarded pass over the text rewrites `\\newcommand{\\x}{0.06}` into
+    `\\newcommand{0.06}{0.06}`. Resolving inside the values instead means the
+    document needs exactly one pass.
+    """
+    pattern = macro_pattern(values)
+    if pattern is None:
+        return values
+    resolved = dict(values)
+    for _ in range(MACRO_PASSES):
+        changed = False
+        for name, body in list(resolved.items()):
+            # Never let a macro expand itself; a cycle would grow without bound.
+            rewritten = pattern.sub(
+                lambda m: resolved[m.group(1)] if m.group(1) != name else m.group(0),
+                body,
+            )
+            if rewritten != body:
+                resolved[name] = rewritten
+                changed = True
+        if not changed:
+            break
+    return resolved
+
+
+def expand_value_macros(text: str, values: dict[str, str], spans: list[tuple[int, int]]):
+    """Substitute value macros everywhere except where they are defined.
+
+    Returns `(expanded_text, counts)`. A manuscript that writes its results as
+    generated definitions reads as number-free prose without this, so the
+    numerical auditor sees a sentence with nothing in it to check. That is a
+    silent failure: nothing errors, the audit is simply blind.
+
+    Exactly one pass runs over the document, and it skips every definition
+    span. Values are resolved against each other first.
+    """
+    values = resolve_nested(values)
+    pattern = macro_pattern(values)
+    if pattern is None:
+        return text, {}
+
+    counts: dict[str, int] = {}
+
+    def substitute(segment: str) -> str:
+        def replace(match):
+            name = match.group(1)
+            counts[name] = counts.get(name, 0) + 1
+            return values[name]
+        return pattern.sub(replace, segment)
+
+    pieces = []
+    cursor = 0
+    for start, end in sorted(spans):
+        if start < cursor:
+            continue
+        pieces.append(substitute(text[cursor:start]))
+        pieces.append(text[start:end])
+        cursor = end
+    pieces.append(substitute(text[cursor:]))
+    return "".join(pieces), counts
+
+
+#: Where a table's rows actually live. Matching `table` alone misses the
+#: starred two-column form, sideways floats, and `longtable`, which is not a
+#: float at all but is how a table too long for one page is written.
+TABLE_ENVIRONMENTS = ("table", "table*", "sidewaystable", "sidewaystable*", "longtable")
+FIGURE_ENVIRONMENTS = ("figure", "figure*", "sidewaysfigure", "sidewaysfigure*")
+
+
+def latex_floats(text: str, kinds) -> list[tuple[int, str, str]]:
+    """(start index, body, environment) for each float, in document order."""
+    if isinstance(kinds, str):
+        kinds = (kinds,)
+    found: list[tuple[int, str, str]] = []
+    for kind in kinds:
+        opener = re.compile(r"\\begin\{" + re.escape(kind) + r"\}")
+        closer = "\\end{" + kind + "}"
+        for match in opener.finditer(text):
+            end = text.find(closer, match.end())
+            if end == -1:
+                continue
+            found.append((match.start(), text[match.end() : end], kind))
+    found.sort(key=lambda item: item[0])
+    return found
 
 
 def first_caption(body: str) -> str | None:
@@ -301,7 +447,7 @@ def first_caption(body: str) -> str | None:
 
 def collect_tables(text: str) -> list[dict]:
     inventory = []
-    for i, (start, body) in enumerate(latex_floats(text, "table"), start=1):
+    for i, (start, body, environment) in enumerate(latex_floats(text, TABLE_ENVIRONMENTS), start=1):
         label = LABEL.search(body)
         rows = body.count("\\\\")
         inventory.append(
@@ -315,6 +461,7 @@ def collect_tables(text: str) -> list[dict]:
                 "line_number": line_of(text, start),
                 "row_count": rows,
                 "col_count": None,
+                "environment": environment,
                 "status": "source",
                 "source": "latex_source",
                 "inventory_role": "labelled" if label else "unlabeled_candidate",
@@ -327,7 +474,7 @@ def collect_tables(text: str) -> list[dict]:
 
 def collect_figures(text: str) -> list[dict]:
     inventory = []
-    for i, (start, body) in enumerate(latex_floats(text, "figure"), start=1):
+    for i, (start, body, environment) in enumerate(latex_floats(text, FIGURE_ENVIRONMENTS), start=1):
         label = LABEL.search(body)
         graphics = GRAPHIC.findall(body)
         inventory.append(
@@ -340,8 +487,15 @@ def collect_figures(text: str) -> list[dict]:
                 "page_label": None,
                 "line_number": line_of(text, start),
                 "graphics": graphics,
-                "embedded_image_count": len(graphics),
+                # How many images the figure asks for, which is knowable here.
+                "graphics_count": len(graphics),
+                # How many were extracted from a rendered page, which in source
+                # mode is always none. Reporting the \includegraphics count in
+                # this field claimed images existed that were never written to
+                # parsed/figures/, so a reviewer could cite one that is not there.
+                "embedded_image_count": 0,
                 "embedded_images": [],
+                "environment": environment,
                 "status": "source",
                 "source": "latex_source",
                 "title": None,
@@ -407,6 +561,11 @@ def main() -> int:
     parsed.mkdir(parents=True, exist_ok=True)
 
     text, provenance = flatten(source)
+    # Substitute value macros before anything reads the text. A manuscript that
+    # writes its results as generated definitions is number-free prose to every
+    # collector and every auditor otherwise, and nothing errors to say so.
+    macro_values, macro_spans = macro_definitions(text)
+    text, macro_counts = expand_value_macros(text, macro_values, macro_spans)
     (parsed / "full_text.md").write_text(text, encoding="utf-8")
 
     sections = collect_sections(text)
@@ -430,6 +589,15 @@ def main() -> int:
     # No pages and no embedded images exist before typesetting. Written empty so
     # every downstream consumer finds the file it expects.
     write_json(parsed / "page_index.json", [])
+    # What was substituted, so a finding resting on an expanded number can be
+    # traced back to the definition it came from.
+    write_json(
+        parsed / "macro_expansions.json",
+        [
+            {"macro": name, "value": macro_values[name], "expansions": count}
+            for name, count in sorted(macro_counts.items())
+        ],
+    )
     write_json(parsed / "figures" / "embedded_image_inventory.json", [])
 
     undefined = sorted({c["label"] for c in crossrefs if c["source"] == "latex_ref"}
@@ -458,6 +626,8 @@ def main() -> int:
             "numeric_claim_candidate_count": len(numbers),
             "crossref_count": len(crossrefs),
             "undefined_reference_labels": undefined,
+            "macro_definition_count": len(macro_values),
+            "macro_expansion_count": sum(macro_counts.values()),
             "table_count": len(tables),
             "figure_count": len(figures),
             "embedded_image_count": 0,
