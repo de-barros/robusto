@@ -44,7 +44,6 @@ INPUT = re.compile(r"\\(?:input|include)\{([^}]+)\}")
 # \InputIfFileExists{file}{then}{else} takes three groups; the trailing two must
 # be consumed or their braces leak into the flattened text.
 INPUT_IF = re.compile(r"\\InputIfFileExists\{([^}]+)\}")
-SECTION = re.compile(r"\\(sub)*section\*?\{([^}]*)\}")
 CITE = re.compile(r"\\cite[a-zA-Z]*\*?(?:\[[^]]*\])*\{([^}]*)\}")
 REF = re.compile(r"\\(?:eq|page|name|c)?ref\*?\{([^}]*)\}")
 LABEL = re.compile(r"\\label\{([^}]*)\}")
@@ -160,19 +159,47 @@ def context(text: str, start: int, end: int, width: int = 90) -> str:
     return re.sub(r"\s+", " ", text[max(0, start - width) : end + width]).strip()
 
 
+#: Locates only the opening brace of the section-title argument. The old
+#: SECTION pattern captured up to the first `}` with `[^}]*`, which is the
+#: *inner* closing brace of a nested `\label{...}` when one sits inside the
+#: title, not the title's own closing brace. That truncated the title and left
+#: an unbalanced `\label{sec:foo` fragment glued onto the end of it.
+SECTION_START = re.compile(r"\\(sub)*section\*?\s*\{")
+
+
+def clean_section_title(raw: str) -> tuple[str, str | None]:
+    """Split a raw section-title argument into (display title, label).
+
+    A title routinely carries its own `\\label{...}` (for `\\ref` to resolve
+    to a name), plus formatting like `\\textbf{...}`. Neither belongs in a
+    heading a reviewer reads; the label is worth keeping on its own, the same
+    way collect_tables and collect_figures already do for their captions.
+    """
+    label_match = LABEL.search(raw)
+    label = label_match.group(1) if label_match else None
+    stripped = LABEL.sub("", raw)
+    stripped = re.sub(r"\\[a-zA-Z]+\*?", " ", stripped)
+    stripped = re.sub(r"[{}]", "", stripped)
+    return re.sub(r"\s+", " ", stripped).strip(), label
+
+
 def collect_sections(text: str) -> list[dict]:
     sections = []
-    for i, m in enumerate(SECTION.finditer(text), start=1):
-        level = "subsection" if m.group(1) else "section"
+    for i, match in enumerate(SECTION_START.finditer(text), start=1):
+        level = "subsection" if match.group(1) else "section"
+        open_brace = match.end() - 1
+        close = match_group(text, open_brace)
+        title, label = clean_section_title(text[match.end() : close - 1])
         sections.append(
             {
                 "section_id": f"S{i:03d}",
-                "title": m.group(2).strip(),
+                "title": title,
+                "section_label": label,
                 "level": level,
                 "page": None,
                 "page_label": None,
-                "line_number": line_of(text, m.start()),
-                "char_start": m.start(),
+                "line_number": line_of(text, match.start()),
+                "char_start": match.start(),
             }
         )
     return sections

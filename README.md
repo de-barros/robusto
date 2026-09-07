@@ -173,7 +173,10 @@ master.do]" into the prose as though it were a finding. Macros taking
 arguments and macros whose body holds a real command are left alone, since
 those are formatting rather than values. What was substituted is recorded in
 `parsed/macro_expansions.json`, so a finding resting on an expanded number can
-be traced to the definition it came from.
+be traced to the definition it came from. Section and subsection titles are
+extracted with the same brace-balancing, so a `\label{...}` nested inside a
+`\section{...}` argument is captured into its own `section_label` field
+instead of truncating the visible title.
 
 The report lands at `outputs/<paper_id>/report.md`. Intermediate artifacts,
 prompts, logs, reviewer outputs, routing decisions and the editor bundle are
@@ -302,7 +305,7 @@ something it does not mean.
 
 ## Status
 
-Covered by 246 passing tests: the upstream suite, the schema-contract layer,
+Covered by 254 passing tests: the upstream suite, the schema-contract layer,
 the LaTeX source front-end, the authentication and billing diagnosis, the mock
 backend, and an end-to-end run of the whole pipeline on a fixture manuscript.
 

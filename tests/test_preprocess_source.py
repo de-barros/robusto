@@ -336,5 +336,64 @@ class FloatEnvironments(unittest.TestCase):
         self.assertEqual(figure["graphics"], ["a.pdf", "b.pdf"])
 
 
+class SectionTitles(unittest.TestCase):
+    """Section and subsection title extraction.
+
+    A \\label nested inside \\section{...} has its own closing brace, so a
+    title regex that stops at the first `}` truncates the title and leaves an
+    unbalanced `\\label{sec:foo` fragment glued to the end of it. Found by the
+    preflight auditor on a real manuscript, on six of Avanti's headings.
+    """
+
+    def test_a_nested_label_does_not_truncate_the_title(self) -> None:
+        text = r"\section{Robustness and heterogeneity \label{sec:robhet}}"
+        sections = collect_sections(text)
+        self.assertEqual(len(sections), 1)
+        self.assertEqual(sections[0]["title"], "Robustness and heterogeneity")
+        self.assertNotIn("{", sections[0]["title"])
+        self.assertNotIn("}", sections[0]["title"])
+        self.assertNotIn("label", sections[0]["title"].lower())
+
+    def test_the_label_is_captured_rather_than_discarded(self) -> None:
+        text = r"\section{Results \label{sec:rests}}"
+        sections = collect_sections(text)
+        self.assertEqual(sections[0]["section_label"], "sec:rests")
+
+    def test_a_title_without_a_label_has_none(self) -> None:
+        text = r"\section{Introduction}"
+        sections = collect_sections(text)
+        self.assertIsNone(sections[0]["section_label"])
+
+    def test_subsections_are_distinguished_from_sections(self) -> None:
+        text = r"\section{One}" + "\n" + r"\subsection{Two \label{sec:two}}"
+        sections = collect_sections(text)
+        self.assertEqual([s["level"] for s in sections], ["section", "subsection"])
+        self.assertEqual(sections[1]["title"], "Two")
+        self.assertEqual(sections[1]["section_label"], "sec:two")
+
+    def test_a_starred_section_is_still_collected(self) -> None:
+        text = r"\section*{Acknowledgements}"
+        sections = collect_sections(text)
+        self.assertEqual(sections[0]["title"], "Acknowledgements")
+
+    def test_formatting_macros_in_a_title_are_reduced_to_plain_text(self) -> None:
+        text = r"\section{The \textbf{ITT} Effect \label{sec:itt}}"
+        sections = collect_sections(text)
+        self.assertEqual(sections[0]["title"], "The ITT Effect")
+
+    def test_sections_are_numbered_and_located_in_document_order(self) -> None:
+        text = r"\section{First}" + "\n\n" + r"\section{Second}"
+        sections = collect_sections(text)
+        self.assertEqual([s["section_id"] for s in sections], ["S001", "S002"])
+        self.assertLess(sections[0]["line_number"], sections[1]["line_number"])
+
+    def test_a_brace_inside_a_double_nested_macro_still_balances(self) -> None:
+        """The general case the bug was an instance of: any nested {...} group."""
+        text = r"\section{Effects on \emph{test scores} \label{sec:eff}}"
+        sections = collect_sections(text)
+        self.assertEqual(sections[0]["title"], "Effects on test scores")
+        self.assertEqual(sections[0]["section_label"], "sec:eff")
+
+
 if __name__ == "__main__":
     unittest.main()
