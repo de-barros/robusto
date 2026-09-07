@@ -72,6 +72,20 @@ CC BY-NC, which would have forced this repository to be non-commercial.
   reaction. Upstream already worked this way; the resemblance is noted because
   the idea was consulted.
 
+  Imbad0202/academic-research-skills — https://github.com/Imbad0202/academic-research-skills
+  CC BY-NC. No code or text was copied; that licence would be incompatible
+  with this repository's. Its calibration mode is the source of one idea used
+  here: that a reviewer's own error profile should be measured rather than
+  assumed. The implementation and the metric are different, because that
+  project scores accept/reject decisions against gold labels and robusto emits
+  findings rather than decisions, so robusto measures recall on defects it
+  plants itself. The idea is theirs.
+
+  scunning1975/MixtapeTools — https://github.com/scunning1975/MixtapeTools
+  No licence stated, so nothing was copied. Consulted when documenting how
+  robusto differs from a code-and-replication audit; its referee2 skill audits
+  the pipeline behind a paper rather than the manuscript.
+
   lcrawfurd/claude-skills — https://github.com/lcrawfurd/claude-skills
   No licence stated. Consulted for the same persona in a shorter form.
 

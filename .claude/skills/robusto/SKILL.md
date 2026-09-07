@@ -102,6 +102,13 @@ selection` costs two calls and also shows which reviewers would run. Continue
 either with `--resume-after-preflight`, which reuses the parse and the preflight
 output. Prefer this sequence to a full run the first time a manuscript is seen.
 
+After the report, a seeded-defect calibration runs by default: it plants
+defects it knows about into a copy of the parse and checks whether the auditors
+report them, at a cost of three or four extra calls. Result at
+`outputs/<paper_id>/calibration.md`. Relay a miss when reporting, since it means
+silence in that class is unmeasured rather than clean. `--no-calibration` skips
+it.
+
 A full run takes a long time and makes many model calls. Say so before starting, and
 do not begin a run the user has not asked for.
 

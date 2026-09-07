@@ -14,7 +14,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from pipeline_paths import paper_run_paths
+from pipeline_paths import SELECTED_REVIEWERS_CONFIG, paper_run_paths
+from calibrate import (
+    DEFAULT_SEED,
+    match_findings,
+    prepare_calibration_parse,
+    render_report,
+    unmatched_finding_count,
+)
 from preprocess_source import resolve_root, source_sha256
 from render_prompts import render_template
 from claude_backend import (
@@ -808,6 +815,124 @@ def validate_reviewer_batch(
     return validation_errors
 
 
+def run_calibration(
+    repo: Path,
+    paper_id: str,
+    source_parsed: Path,
+    all_reviewers: list[ReviewerConfig],
+    schema_path: Path,
+    outputs_dir: Path,
+    log_dir: Path,
+    model: str | None,
+    reasoning_effort: str | None,
+    max_parallel: int,
+    timeout_seconds: float | None,
+    seed: int,
+) -> dict:
+    """Seed known defects into a copy of the parse and see if the panel finds them.
+
+    Runs under its own paper id, so the seeded copy is a normal parsed directory
+    and the provenance validator accepts findings that cite it. Only the
+    auditors whose remit covers a seeded class are run, which is what keeps this
+    to a few calls rather than a second panel.
+
+    A failure here is reported and swallowed. Calibration measures the review;
+    it is not the review, and losing it must not lose a completed report.
+    """
+    calibration_id = f"{paper_id}-calibration"
+    calibration_paths = paper_run_paths(repo, calibration_id)
+
+    mutations = prepare_calibration_parse(
+        source_parsed, calibration_paths.parsed_dir, seed=seed
+    )
+    if not mutations:
+        print("[calibration] no seedable defect targets in this parse; skipped")
+        return {"status": "skipped", "reason": "no seedable targets"}
+
+    wanted = {mutation.target_auditor for mutation in mutations}
+    roster = [reviewer for reviewer in all_reviewers if reviewer.name in wanted]
+    if not roster:
+        print("[calibration] no auditor covers the seeded classes; skipped")
+        return {"status": "skipped", "reason": "no covering auditor"}
+
+    print(
+        f"[calibration] {len(mutations)} defect(s) seeded, "
+        f"{len(roster)} auditor(s) to check them: "
+        + ", ".join(sorted(reviewer.name for reviewer in roster))
+    )
+
+    config_path = calibration_paths.selection_dir / SELECTED_REVIEWERS_CONFIG
+    write_reviewers_config(config_path, roster)
+    relative_config = str(config_path.relative_to(repo))
+
+    run_required(
+        "calibration-render-prompts",
+        render_prompts_command(
+            paper_id=calibration_id,
+            parsed_dir=calibration_paths.parsed_dir,
+            reviews_dir=calibration_paths.reviews_dir,
+            schema_path=schema_path,
+            prompts_dir=calibration_paths.prompts_dir,
+            reviewers_config=relative_config,
+            repo=repo,
+        ),
+        repo,
+        log_dir,
+    )
+
+    started_at = run_reviewer_batch(
+        roster,
+        repo,
+        calibration_paths.prompts_dir,
+        calibration_paths.reviews_dir,
+        schema_path,
+        calibration_paths.log_dir,
+        model,
+        reasoning_effort,
+        max_parallel,
+        timeout_seconds,
+    )
+    errors = validate_reviewer_batch(
+        roster,
+        started_at,
+        repo,
+        calibration_id,
+        calibration_paths.reviews_dir,
+        schema_path,
+        relative_config,
+        calibration_paths.log_dir,
+        keep_going=True,
+    )
+    for error in errors:
+        print(f"[calibration] validation: {error}")
+
+    match_findings(calibration_paths.reviews_dir, mutations)
+    unmatched = unmatched_finding_count(calibration_paths.reviews_dir, mutations)
+
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+    report_path = outputs_dir / "calibration.md"
+    report_path.write_text(render_report(mutations, unmatched, paper_id), encoding="utf-8")
+
+    detected = [mutation for mutation in mutations if mutation.detected]
+    summary = {
+        "status": "complete",
+        "seed": seed,
+        "seeded": len(mutations),
+        "detected": len(detected),
+        "unmatched_findings": unmatched,
+        "report": str(report_path.relative_to(repo)),
+        "defects": [mutation.to_json() for mutation in mutations],
+    }
+    write_run_manifest(calibration_paths.run_manifest_path, summary)
+
+    print(f"[calibration] detected {len(detected)} of {len(mutations)} seeded defects")
+    for mutation in mutations:
+        if not mutation.detected:
+            print(f"[calibration] MISSED {mutation.defect_id} ({mutation.defect_class})")
+    print(f"[calibration] {report_path.relative_to(repo)}")
+    return summary
+
+
 def main() -> int:
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
@@ -844,6 +969,22 @@ def main() -> int:
             "manuscript before running the panel for real. A mock report is "
             "unmistakable; it opens with a banner saying so."
         ),
+    )
+    parser.add_argument(
+        "--no-calibration",
+        action="store_true",
+        help=(
+            "Skip the seeded-defect calibration that otherwise runs after the "
+            "report. Calibration costs a few extra model calls and answers a "
+            "question the report cannot: whether this run would have caught a "
+            "defect that was demonstrably there."
+        ),
+    )
+    parser.add_argument(
+        "--calibration-seed",
+        type=int,
+        default=DEFAULT_SEED,
+        help="Seed choosing which defects are planted. Fixed so reruns compare.",
     )
     parser.add_argument(
         "--stop-after",
@@ -1026,6 +1167,7 @@ def main() -> int:
         "selector_timeout_minutes": args.selector_timeout_minutes,
         "reviewers_config": args.reviewers_config,
         "resumed_after_preflight": args.resume_after_preflight,
+        "calibration": not args.no_calibration,
         "python": sys.version,
         "git": git_metadata(repo),
     }
@@ -1319,6 +1461,29 @@ def main() -> int:
     )
     write_run_manifest(paths.run_manifest_path, run_manifest)
     print(f"[done] report: {report_path.relative_to(repo)}")
+
+    # After the report, never before it: calibration measures the review and is
+    # not the review, so it must not delay or endanger the deliverable.
+    if not args.no_calibration and backend == "claude":
+        try:
+            run_manifest["calibration_result"] = run_calibration(
+                repo,
+                paper_id,
+                parsed_dir,
+                reviewers,
+                schema_path,
+                outputs_dir,
+                log_dir,
+                args.model,
+                args.reasoning_effort,
+                args.max_parallel_reviewers,
+                args.agent_timeout_minutes * 60,
+                args.calibration_seed,
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed measurement is not a failed run
+            print(f"[calibration] skipped after an error: {exc}")
+            run_manifest["calibration_result"] = {"status": "error", "error": str(exc)}
+        write_run_manifest(paths.run_manifest_path, run_manifest)
     print(f"[logs] {log_dir.relative_to(repo)}")
     return 0
 

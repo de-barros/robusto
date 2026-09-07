@@ -87,6 +87,16 @@ class MockPipeline(unittest.TestCase):
         for name in run["selected_reviewers"]:
             self.assertTrue((WORK / "reviews" / f"{name}.json").is_file(), name)
 
+    def test_calibration_does_not_run_under_the_mock(self) -> None:
+        """A detection rate from synthetic findings would be meaningless.
+
+        The mock never quotes a seeded value, so calibration would always
+        report zero detections and look like a panel failure. The machinery is
+        covered by tests/test_calibrate.py instead.
+        """
+        self.assertNotIn("[calibration]", self.result.stdout)
+        self.assertFalse((REPO_ROOT / "work" / f"{PAPER_ID}-calibration").exists())
+
     def test_preflight_warning_fired_without_blocking(self) -> None:
         self.assertIn("[warn] parser quality:", self.result.stdout)
 

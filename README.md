@@ -57,6 +57,49 @@ It must name the passage each objection attacks and say what evidence would
 answer it, so it produces arguments rather than doubts. A clean result is
 reported as clean and is not padded.
 
+## Related tools
+
+Several open tools review academic work, and they are not substitutes for one
+another. They audit different objects, so which one fits depends on what you
+need checked.
+
+- **[Ingar30/reviewer](https://github.com/Ingar30/reviewer)** (MIT) — the
+  project robusto is ported from. Most of what robusto does is its design.
+- **[referee2](https://github.com/scunning1975/MixtapeTools)**, in Scott
+  Cunningham's MixtapeTools — audits the code behind a paper.
+- **[academic-paper-reviewer](https://github.com/Imbad0202/academic-research-skills)**
+  (CC BY-NC) — simulates a journal peer-review panel.
+
+| | robusto | referee2 | academic-paper-reviewer |
+|---|---|---|---|
+| Audits | the manuscript text | the code that produced the numbers | the paper as a scholarly contribution |
+| Runs your analysis | no | **yes**, in R, Stata and Python | no |
+| Input | PDF or LaTeX source, deterministically parsed | the project repository | the paper |
+| Structure | 20 auditors in parallel, schema-validated findings | one auditor, five sequential audits | seven agents in phases, personas configured per paper |
+| Venue | not modelled | not modelled | central; journal tier is inferred and calibrates rigour |
+| Verdict | none, by design | Accept / Minor / Major Revision | rubric scores and an editorial decision |
+| Scope | economics | empirical projects; also slide decks | field-general |
+| Distinctive | seeded-defect calibration, mock backend | cross-language replication | re-review of an R&R, Socratic mode, self-calibration |
+
+What each cannot do matters as much:
+
+- **robusto never executes anything.** It checks whether the manuscript is
+  internally consistent and adequately supported, not whether the numbers are
+  correct. A pipeline bug that reports a wrong value consistently throughout is
+  invisible to it.
+- **referee2 needs the code** and a working R, Stata and Python toolchain, so it
+  does not apply to a paper you only have as a PDF.
+- **academic-paper-reviewer reads the paper directly**, without a deterministic
+  parse layer, and returns a judgment rather than a list of corrections.
+
+They compose, and the order is worth thinking about: verifying the pipeline
+before the manuscript avoids carefully auditing prose built on wrong numbers.
+
+robusto's calibration below is adapted from academic-paper-reviewer's
+calibration mode. The idea, that a reviewer's own error profile should be
+measured rather than assumed, is theirs; the metric differs because the two
+tools emit different things.
+
 ## Requirements
 
 Python 3.12+, the [Claude Code CLI](https://claude.com/claude-code), and web
@@ -227,6 +270,47 @@ python scripts/review_paper.py --source "path/to/manuscript.tex" --paper-id firs
 Resume reuses the parsed artifacts and the validated preflight output. The
 manifest records where a run stopped.
 
+## Calibration: did this run catch anything?
+
+A review that reports nothing is ambiguous. The paper may be clean, or the
+auditors may have missed what is wrong, and the report cannot tell you which.
+The second reading is the one that matters.
+
+After the report is written, robusto plants defects it knows about and checks
+whether they come back:
+
+```
+[calibration] 3 defect(s) seeded, 3 auditor(s) to check them
+[calibration] detected 2 of 3 seeded defects
+[calibration] MISSED SEED-REF-001 (citation_missing_from_bibliography)
+```
+
+The result lands at `outputs/<paper_id>/calibration.md`. Defects are written
+into a copy of the parsed artifacts, never the run's own, and only the auditors
+whose remit covers a seeded class are run, which keeps this to three or four
+extra calls rather than a second panel. Current classes: a prose value
+contradicting the table it came from, a cross-reference pointing at a label
+that does not exist, and a citation absent from the bibliography.
+
+Turn it off with `--no-calibration`. `--calibration-seed` chooses which targets
+are planted; it is fixed by default so repeated runs measure the same thing.
+
+**What it measures.** Recall on seeded defects of those classes, in that
+manuscript, on that run.
+
+**What it does not.** It is not a false-positive rate: findings that match no
+seeded defect are counted and reported as unmatched, not scored as errors,
+because the manuscript has real defects of its own and those are the point. It
+does not generalise across classes either, since catching a contradicted
+coefficient says nothing about whether an unstated identification assumption
+would be caught. And detection is a lower bound, because a finding counts only
+when it quotes or restates the seeded value, so one that describes the defect
+without naming it is scored as a miss.
+
+A missed defect is the useful output. It means this run would not have told you
+about a real defect of that class, so silence there should be read as
+unmeasured rather than clean.
+
 ## Using it as a Claude Code skill
 
 The repository ships a skill at `.claude/skills/robusto/`, which Claude Code
@@ -291,7 +375,7 @@ something it does not mean.
 
 ## Status
 
-254 passing tests, run on Linux and Windows in CI: the upstream suite, the
+277 passing tests, run on Linux and Windows in CI: the upstream suite, the
 schema-contract layer, the LaTeX source front-end, the environment and
 authentication checks, the mock backend, and an end-to-end pipeline run on a
 fixture manuscript.
@@ -302,6 +386,10 @@ no undefined labels), nineteen reviewers ran in parallel batches over about 80
 minutes and every one returned schema-valid output on the first attempt. The
 retry and fail-loud branches, which a clean run never reaches, are covered by
 the mock backend instead.
+
+Calibration is on by default, so a completed run also reports how many
+defects it was able to plant and detect. That number is the honest check on
+everything above.
 
 This has been exercised on a small number of manuscripts. The prompt contract
 holding is an empirical result, not a guarantee, which is why validation is
