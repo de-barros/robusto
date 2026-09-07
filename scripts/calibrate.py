@@ -130,6 +130,12 @@ DEFINITION_COMMANDS = ("newcommand", "renewcommand", "providecommand", "def", "s
 #: non-prose regions beyond the two that have actually bitten.
 MIN_PROSE_WORDS = 5
 
+#: A line carrying this many figures is a row of data rather than a claim about
+#: one. A LaTeX parse rules those out by their markup, but a PDF parse flattens
+#: tables into the same text as the prose, where a row like "Teacher helps me
+#: when I ask 0.97 0.96 0.97" otherwise reads as a sentence.
+MAX_PROSE_NUMBERS = 3
+
 
 def line_at(text: str, index: int) -> str:
     """The whole source line containing `index`."""
@@ -141,7 +147,51 @@ def line_at(text: str, index: int) -> str:
 def is_prose_line(line: str) -> bool:
     if any(("\\" + command) in line for command in DEFINITION_COMMANDS):
         return False
+    if len(re.findall(r"(?<![\w.])\d+\.\d+(?![\w.])", line)) >= MAX_PROSE_NUMBERS:
+        return False
     return len(re.findall(r"[A-Za-z]{2,}", line)) >= MIN_PROSE_WORDS
+
+
+#: Enough words to be a sentence rather than a title, a running head or a
+#: caption, which a length threshold alone lets through.
+MIN_ANCHOR_WORDS = 10
+
+
+def first_prose_line_end(text: str, *, minimum_words: int = MIN_ANCHOR_WORDS) -> int | None:
+    """Offset just past the first substantial line of running prose.
+
+    Used where there is no sectioning markup to anchor on, so that an inserted
+    citation lands in the body of the paper rather than in the title block, a
+    caption, a running head or a table row.
+    """
+    offset = 0
+    for line in text.split("\n"):
+        words = len(re.findall(r"[A-Za-z]{2,}", line))
+        if words >= minimum_words and is_prose_line(line):
+            return offset + len(line)
+        offset += len(line) + 1
+    return None
+
+
+def table_body(parsed: Path, table: dict) -> str:
+    """The table's contents, however this parse chose to record them.
+
+    The LaTeX path stores the body inline under `body`. The PDF path writes it
+    to a sidecar file and records only the path, so reading the inline field
+    alone yielded no seedable numbers on any PDF parse, and calibration skipped
+    itself silently on exactly the input it exists to measure.
+    """
+    inline = table.get("body")
+    if inline:
+        return str(inline)
+    for key in ("text_path", "markdown_path", "csv_path"):
+        recorded = table.get(key)
+        if not recorded:
+            continue
+        candidate = parsed / "tables" / Path(str(recorded)).name
+        if candidate.is_file():
+            return candidate.read_text(encoding="utf-8", errors="replace")
+    return ""
 
 
 def seed_contradicted_number(text: str, parsed: Path, rng: random.Random) -> tuple[str, Mutation] | None:
@@ -159,20 +209,28 @@ def seed_contradicted_number(text: str, parsed: Path, rng: random.Random) -> tup
     tables = json.loads(inventory_path.read_text(encoding="utf-8"))
     table_numbers = set()
     for table in tables:
-        table_numbers.update(re.findall(r"\d+\.\d+", table.get("body") or ""))
+        table_numbers.update(re.findall(r"\d+\.\d+", table_body(parsed, table)))
     if not table_numbers:
         return None
 
     spans = tabular_spans(text)
+    # A LaTeX parse keeps the tables inline, so "appears in a table" can be
+    # checked against the text itself. A PDF parse keeps them in sidecar files,
+    # and there the inventory the numbers came from is that evidence.
+    tables_are_inline = bool(spans)
     candidates = []
     for number in sorted(table_numbers):
         pattern = re.compile(r"(?<![\w.])" + re.escape(number) + r"(?![\w.])")
+        matches = list(pattern.finditer(text))
         outside = [
             match
-            for match in pattern.finditer(text)
+            for match in matches
             if not _inside(match.start(), spans) and is_prose_line(line_at(text, match.start()))
         ]
-        inside = any(_inside(match.start(), spans) for match in pattern.finditer(text))
+        if tables_are_inline:
+            inside = any(_inside(match.start(), spans) for match in matches)
+        else:
+            inside = True
         if inside and len(outside) == 1:
             candidates.append((number, outside[0]))
     if not candidates:
@@ -197,17 +255,77 @@ def seed_contradicted_number(text: str, parsed: Path, rng: random.Random) -> tup
     )
 
 
+def seed_broken_text_crossref(
+    text: str, crossrefs: list[dict], rng: random.Random
+) -> tuple[str, Mutation] | None:
+    """Repoint a prose cross-reference, for parses that carry no `\\ref` macros.
+
+    A PDF parse records references as the words on the page ("Table 5"), not as
+    macros, so the LaTeX path finds nothing. Renumbering one of them past the
+    end of its own series leaves a reference to an exhibit that does not exist,
+    which is the same defect the macro path plants.
+    """
+    numbered = [
+        item
+        for item in crossrefs
+        if item.get("kind") and str(item.get("label") or "").isdigit()
+    ]
+    if not numbered:
+        return None
+
+    highest: dict[str, int] = {}
+    for item in numbered:
+        kind = str(item["kind"])
+        highest[kind] = max(highest.get(kind, 0), int(item["label"]))
+
+    order = list(range(len(numbered)))
+    rng.shuffle(order)
+    for position in order:
+        chosen = numbered[position]
+        kind = str(chosen["kind"])
+        label = int(chosen["label"])
+        missing = highest[kind] + 40
+        # The point is a reference to something that is not there. If the paper
+        # happens to name that exhibit anyway, the edit would contradict
+        # nothing, so leave it alone rather than plant an inert defect.
+        if re.search(r"\b" + re.escape(f"{kind} {missing}") + r"(?![\d.])", text):
+            continue
+        pattern = re.compile(r"\b" + re.escape(kind) + r"\s+" + str(label) + r"(?![\d.])")
+        for match in pattern.finditer(text):
+            # Skip the exhibit's own caption; renaming it is a different defect.
+            if text[match.end() : match.end() + 1] == ":":
+                continue
+            if not is_prose_line(line_at(text, match.start())):
+                continue
+            replacement = f"{kind} {missing}"
+            mutated = text[: match.start()] + replacement + text[match.end() :]
+            return mutated, Mutation(
+                defect_id="SEED-XREF-001",
+                defect_class="dangling_cross_reference",
+                target_auditor="crossref_auditor",
+                description=(
+                    f"A cross-reference to {kind} {label} was repointed at "
+                    f"{replacement}, which does not exist in the manuscript."
+                ),
+                token=replacement,
+                original=f"{kind} {label}",
+                line_number=_line_of(text, match.start()),
+            )
+    return None
+
+
 def seed_broken_crossref(text: str, parsed: Path, rng: random.Random) -> tuple[str, Mutation] | None:
     """Point a cross-reference at a label that does not exist."""
     crossrefs_path = parsed / "crossrefs.json"
     if not crossrefs_path.is_file():
         return None
+    all_crossrefs = json.loads(crossrefs_path.read_text(encoding="utf-8"))
     crossrefs = [
-        item for item in json.loads(crossrefs_path.read_text(encoding="utf-8"))
+        item for item in all_crossrefs
         if item.get("source") == "latex_ref" and item.get("label")
     ]
     if not crossrefs:
-        return None
+        return seed_broken_text_crossref(text, all_crossrefs, rng)
 
     chosen = crossrefs[rng.randrange(len(crossrefs))]
     original_label = chosen["label"]
@@ -246,14 +364,22 @@ def seed_uncited_reference(text: str, parsed: Path, rng: random.Random) -> tuple
         return None
 
     anchor = re.search(r"(?m)^\\section\{", text)
-    if anchor is None:
-        return None
-    insert_at = text.find("\n", anchor.end())
-    if insert_at == -1:
+    if anchor is not None:
+        insert_at = text.find("\n", anchor.end())
+        cited_as = "\\citep{" + invented + "}"
+        token = invented
+    else:
+        # A PDF parse carries no markup to anchor on, and a \citep would look
+        # like nothing else on the page. Cite the way the page itself does.
+        insert_at = first_prose_line_end(text)
+        cited_as = "(Seededmissing, 2026)"
+        token = "Seededmissing"
+    if insert_at is None or insert_at == -1:
         return None
     sentence = (
         "\nA further result along these lines is reported elsewhere "
-        "\\citep{" + invented + "}.\n"
+        + cited_as
+        + ".\n"
     )
     mutated = text[:insert_at] + sentence + text[insert_at:]
     return mutated, Mutation(
@@ -261,10 +387,10 @@ def seed_uncited_reference(text: str, parsed: Path, rng: random.Random) -> tuple
         defect_class="citation_missing_from_bibliography",
         target_auditor="reference_auditor",
         description=(
-            f"A citation to {invented} was added to the text. No such entry "
-            "exists in the bibliography."
+            f"A citation rendered as {cited_as} was added to the text. No such "
+            "entry exists in the bibliography."
         ),
-        token=invented,
+        token=token,
         original="(none)",
         line_number=_line_of(text, insert_at),
     )
