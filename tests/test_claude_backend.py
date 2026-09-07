@@ -25,6 +25,8 @@ from claude_backend import (  # noqa: E402
     billing_route_warning,
     probe_authentication,
     claude_command,
+    cli_auth_status,
+    cli_login_hint,
     claude_exec_command,
     extract_json_object,
     finalize_structured_output,
@@ -170,7 +172,10 @@ class CliResolution(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {}, clear=False)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Both are set for real when these tests run inside the Claude desktop
+        # app, which would otherwise satisfy the resolver before PATH is reached.
         os.environ.pop("ROBUSTO_CLAUDE_BIN", None)
+        os.environ.pop("CLAUDE_CODE_EXECPATH", None)
 
     def test_path_is_used_when_it_carries_the_cli(self) -> None:
         with mock.patch("shutil.which", return_value="/usr/bin/claude"):
@@ -327,6 +332,110 @@ class AuthProbe(unittest.TestCase):
     def test_the_nonce_cannot_be_satisfied_by_ordinary_prose(self) -> None:
         hint = self._run(stdout="I reviewed the paper and found three problems.")
         self.assertIsNotNone(hint)
+
+
+class CliLoginState(unittest.TestCase):
+    """The blocker that cost two evenings.
+
+    The desktop app and the CLI keep separate credentials. A CLI that was never
+    signed in reports "OAuth session expired and could not be refreshed" and
+    exits 0, which reads as a lapsed session rather than an absent one. Asking
+    `claude auth status` costs nothing and answers it outright.
+    """
+
+    def _status(self, payload, returncode=0):
+        completed = mock.Mock(stdout=json.dumps(payload), stderr="", returncode=returncode)
+        return mock.patch("subprocess.run", return_value=completed)
+
+    def setUp(self) -> None:
+        patcher = mock.patch.dict(os.environ, {}, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for name in ("CLAUDE_CODE_ENTRYPOINT", "CLAUDECODE"):
+            os.environ.pop(name, None)
+
+    def test_status_is_parsed(self) -> None:
+        with mock.patch("claude_backend.claude_command", return_value="claude"), self._status(
+            {"loggedIn": True, "authMethod": "claudeai"}
+        ):
+            self.assertEqual(cli_auth_status()["authMethod"], "claudeai")
+
+    def test_a_signed_in_cli_produces_no_hint(self) -> None:
+        self.assertIsNone(cli_login_hint({"loggedIn": True, "authMethod": "claudeai"}))
+
+    def test_a_signed_out_cli_names_the_exact_command(self) -> None:
+        hint = cli_login_hint({"loggedIn": False, "authMethod": "none"})
+        self.assertIsNotNone(hint)
+        self.assertIn("claude auth login --claudeai", hint)
+
+    def test_under_the_desktop_app_it_explains_why_being_logged_in_is_not_enough(self) -> None:
+        os.environ["CLAUDE_CODE_ENTRYPOINT"] = "claude-desktop"
+        hint = cli_login_hint({"loggedIn": False})
+        self.assertIn("does not sign in the CLI", hint)
+        self.assertIn("same subscription", hint)
+
+    def test_outside_the_desktop_app_it_stays_short(self) -> None:
+        hint = cli_login_hint({"loggedIn": False})
+        self.assertNotIn("desktop app", hint)
+
+    def test_unreadable_status_yields_no_hint(self) -> None:
+        """Never block a run on a status command that could not be read."""
+        with mock.patch("claude_backend.claude_command", return_value="claude"), mock.patch(
+            "subprocess.run", side_effect=OSError("boom")
+        ):
+            self.assertIsNone(cli_auth_status())
+            self.assertIsNone(cli_login_hint())
+
+    def test_the_probe_reports_the_login_without_spending_a_call(self) -> None:
+        calls = []
+
+        def record(command, **kwargs):
+            calls.append(command)
+            return mock.Mock(
+                stdout=json.dumps({"loggedIn": False, "authMethod": "none"}),
+                stderr="",
+                returncode=0,
+            )
+
+        with mock.patch("claude_backend.claude_command", return_value="claude"), mock.patch(
+            "subprocess.run", side_effect=record
+        ):
+            hint = probe_authentication()
+        self.assertIn("claude auth login", hint)
+        self.assertEqual(len(calls), 1, "only the free status call should run")
+        self.assertIn("auth", calls[0])
+
+
+class ExecPathResolution(unittest.TestCase):
+    """The desktop app names the binary it runs; prefer it to any guess."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.binary = Path(self.tmp.name) / "claude.exe"
+        self.binary.write_text("", encoding="utf-8")
+        patcher = mock.patch.dict(os.environ, {}, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop("ROBUSTO_CLAUDE_BIN", None)
+        os.environ.pop("CLAUDE_CODE_EXECPATH", None)
+
+    def test_execpath_wins_over_path(self) -> None:
+        os.environ["CLAUDE_CODE_EXECPATH"] = str(self.binary)
+        with mock.patch("shutil.which", return_value="/usr/bin/claude"):
+            self.assertEqual(claude_command(), str(self.binary))
+
+    def test_an_explicit_override_still_wins_over_execpath(self) -> None:
+        os.environ["CLAUDE_CODE_EXECPATH"] = str(self.binary)
+        other = Path(self.tmp.name) / "other.exe"
+        other.write_text("", encoding="utf-8")
+        os.environ["ROBUSTO_CLAUDE_BIN"] = str(other)
+        self.assertEqual(claude_command(), str(other))
+
+    def test_a_stale_execpath_falls_through_to_path(self) -> None:
+        os.environ["CLAUDE_CODE_EXECPATH"] = str(Path(self.tmp.name) / "gone.exe")
+        with mock.patch("shutil.which", return_value="/usr/bin/claude"):
+            self.assertEqual(claude_command(), "/usr/bin/claude")
 
 
 class CommandConstruction(unittest.TestCase):

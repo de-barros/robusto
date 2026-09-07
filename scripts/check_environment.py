@@ -12,6 +12,8 @@ from claude_backend import (  # noqa: E402
     active_backend,
     billing_route_warning,
     claude_command,
+    cli_auth_status,
+    cli_login_hint,
     probe_authentication,
 )
 
@@ -92,13 +94,23 @@ def main() -> int:
         except BackendUnavailable as exc:
             failures.append(str(exc))
         else:
-            if not args.offline:
-                # Presence is not readiness. An expired token passes every static
-                # check and then kills the first reviewer, after the parse has run.
-                print("[check] probing the Claude Code CLI for a valid session ...")
-                hint = probe_authentication()
-                if hint:
-                    failures.append(hint)
+            # Free, instant, and the single most common blocker: the CLI keeps
+            # credentials separately from the desktop app, so being signed in to
+            # the app proves nothing about the subprocesses reviewers run in.
+            status = cli_auth_status()
+            login = cli_login_hint(status)
+            if login:
+                failures.append(login)
+            else:
+                if status:
+                    method = status.get("authMethod") or "unknown"
+                    print(f"[check] the CLI is signed in (authMethod: {method}).")
+                if not args.offline:
+                    # Signed in is still not proof of a usable session.
+                    print("[check] probing the Claude Code CLI for a valid session ...")
+                    hint = probe_authentication()
+                    if hint:
+                        failures.append(hint)
 
         # Not a failure: a gateway is a legitimate choice. But it decides which
         # account pays for the run, so it is never left implicit.

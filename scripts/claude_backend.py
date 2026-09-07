@@ -48,6 +48,11 @@ CLAUDE_FALLBACK_DIRS = (
 #: lives somewhere none of the above cover.
 CLAUDE_BIN_ENV = "ROBUSTO_CLAUDE_BIN"
 
+#: The Claude desktop app exports the CLI binary it runs. Authoritative when
+#: present: it is the same build the host uses, at whatever version the app
+#: last updated itself to, which no guess at an install directory can track.
+EXECPATH_ENV = "CLAUDE_CODE_EXECPATH"
+
 #: Which process answers a model call. ``claude`` is the real CLI. ``mock`` is
 #: scripts/mock_claude.py, which answers from the prompt alone and spends no
 #: tokens, so the whole pipeline after the model call can be exercised on a
@@ -122,6 +127,10 @@ def claude_command() -> str:
         raise BackendUnavailable(
             f"{CLAUDE_BIN_ENV} is set to {override}, which is not a file."
         )
+
+    execpath = os.environ.get(EXECPATH_ENV)
+    if execpath and Path(execpath).is_file():
+        return execpath
 
     for candidate in CLAUDE_CANDIDATES:
         resolved = shutil.which(candidate)
@@ -363,6 +372,14 @@ def probe_authentication(timeout_seconds: float = 60.0) -> str | None:
         command = claude_exec_command()
     except BackendUnavailable as exc:
         return str(exc)
+
+    # Ask the cheap question first. A CLI holding no credentials cannot answer
+    # the probe, and spending a model call to discover that yields a worse
+    # message than `claude auth status` gives away for free.
+    login = cli_login_hint()
+    if login:
+        return login
+
     try:
         completed = subprocess.run(
             command,
@@ -383,7 +400,9 @@ def probe_authentication(timeout_seconds: float = 60.0) -> str | None:
     # Named diagnoses first, because they say what to do about it.
     hint = auth_failure_hint(combined)
     if hint:
-        return hint
+        # A never-signed-in CLI reports an expired session, so prefer the
+        # status-backed explanation whenever the status agrees.
+        return cli_login_hint() or hint
     if completed.returncode != 0:
         first = next((l.strip() for l in combined.splitlines() if l.strip()), "")
         return f"The Claude Code CLI exited {completed.returncode}: {first[:160]}"
@@ -398,6 +417,71 @@ def probe_authentication(timeout_seconds: float = 60.0) -> str | None:
             "Run `claude` once interactively and complete the login, then retry."
         )
     return None
+
+
+def cli_auth_status(timeout_seconds: float = 30.0) -> dict | None:
+    """`claude auth status` as a dict, or None when it cannot be read.
+
+    Free and instant: no model call, no tokens. It answers the question that
+    actually matters, and that nothing else here could answer cheaply, namely
+    whether the CLI itself holds credentials.
+    """
+    import subprocess
+
+    try:
+        command = [claude_command(), "auth", "status"]
+    except BackendUnavailable:
+        return None
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    extracted = extract_json_object(completed.stdout or "")
+    if extracted is None:
+        return None
+    try:
+        payload = json.loads(extracted)
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def cli_login_hint(status: dict | None = None) -> str | None:
+    """Say plainly when the CLI holds no credentials, and how to fix it.
+
+    Worth its own message because the failure is easy to misread. A CLI that
+    was never signed in reports "OAuth session expired and could not be
+    refreshed" and exits 0, which reads as a lapsed login rather than an
+    absent one, and sends you looking for a session to restore that never
+    existed.
+    """
+    status = cli_auth_status() if status is None else status
+    if status is None or status.get("loggedIn"):
+        return None
+    lines = [
+        "The Claude Code CLI is not signed in; `claude auth status` reports "
+        'loggedIn: false, authMethod: "none". Sign it in once with:',
+        "",
+        "    claude auth login --claudeai",
+        "",
+    ]
+    if os.environ.get("CLAUDE_CODE_ENTRYPOINT") or os.environ.get("CLAUDECODE"):
+        lines.append(
+            "Being signed in to the Claude desktop app does not sign in the CLI. "
+            "The app keeps its OAuth session inside its own process and refreshes "
+            "it there, so it never populates the CLI's credential store. "
+            "Reviewers run as separate `claude -p` processes and cannot reach the "
+            "app's session, so they need this one-time login. It uses the same "
+            "subscription and bills the same way."
+        )
+    return "\n".join(lines)
 
 
 def schema_errors(payload: dict, schema_path: Path) -> list[str]:

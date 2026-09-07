@@ -72,10 +72,33 @@ expired token otherwise surfaces only after the deterministic parse has run and
 the first reviewer has been launched. Pass `--offline` to skip the probe and
 check presence only, which is what CI wants.
 
+### Signing in the CLI
+
+Reviewers run as separate `claude -p` processes, so the CLI needs its own
+credentials:
+
+```bash
+claude auth login --claudeai
+```
+
+Once, on the machine that will run reviews. It uses your Claude subscription
+and bills the same way.
+
+**Being signed in to the Claude desktop app does not sign in the CLI.** The app
+keeps its OAuth session inside its own process and refreshes it there, so it
+never populates the CLI's credential store, and a subprocess cannot reach it.
+This is worth stating plainly because the failure is easy to misread: a CLI that
+was never signed in reports `OAuth session expired and could not be refreshed`
+and exits 0, which reads as a lapsed session rather than an absent one, and
+sends you looking for a login to restore that never existed. `check_environment.py`
+now asks `claude auth status` first, which is free and instant, and says so
+outright.
+
 ### Finding the CLI
 
-The binary is looked for in three places, in order: the `ROBUSTO_CLAUDE_BIN`
-environment variable, `PATH`, then the directories the official installers use
+The binary is looked for in four places, in order: the `ROBUSTO_CLAUDE_BIN`
+environment variable, `CLAUDE_CODE_EXECPATH` (which the desktop app exports,
+naming the exact build it runs), `PATH`, then the directories the installers use
 (`~/.local/bin`, `~/.claude/local`, `%APPDATA%/npm`, `/usr/local/bin`,
 `/opt/homebrew/bin`). PATH is not a reliable proxy for installation: the native
 Windows installer writes `claude.exe` to `~/.local/bin` and leaves the persisted
@@ -261,7 +284,7 @@ something it does not mean.
 
 ## Status
 
-Covered by 210 passing tests: the upstream suite, the schema-contract layer,
+Covered by 220 passing tests: the upstream suite, the schema-contract layer,
 the LaTeX source front-end, the authentication and billing diagnosis, the mock
 backend, and an end-to-end run of the whole pipeline on a fixture manuscript.
 

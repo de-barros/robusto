@@ -48,6 +48,15 @@ Confirm three things, and stop if any fails.
    the repo. It checks the Claude Code CLI and the Python dependencies. If the
    repo has a `.venv`, use its interpreter rather than the system one.
 
+   If it reports the CLI is not signed in, relay that: the user runs
+   `claude auth login --claudeai` once. Do not treat this as a bug or go
+   looking for a broken session, and do not suggest it can be worked around.
+   Reviewers run as separate `claude -p` processes, and being signed in to the
+   Claude desktop app does not sign in the CLI: the app holds its OAuth session
+   in its own process and never writes the CLI's credential store. The one
+   login uses the same subscription. Meanwhile `--backend mock` still works and
+   needs no credentials at all, so a dry run is always available.
+
 ## Choosing a mode
 
 Three inputs, exactly one required. Ask which the user wants if it is not
