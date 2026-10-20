@@ -361,14 +361,23 @@ no equivalent of `--output-schema`.
 
 `scripts/claude_backend.py` supplies the third in userland. The schema is
 inlined into the prompt under an explicit contract; stdout is then parsed,
-validated against the same schema file, and on failure the reviewer is asked
-once more with the validation errors quoted back.
+validated against the same schema file and against the semantic rules in
+`validate_review_json.py`, and on failure the reviewer is asked once more with
+the validation errors quoted back. A reply that is valid but evidently blind
+(every finding `cannot_verify`, no source object cited) gets the same one
+retry.
 
 **This is the one real cost of the port.** Provider-side constrained decoding
 cannot drift; a prompt contract can. The mitigation is that nothing downstream
 trusts the model: `finalize_structured_output` refuses anything that does not
-validate, `validate_review_json.py` applies the semantic rules on top, and a
-reviewer that will not conform fails loudly instead of poisoning the report.
+validate, the semantic rules are applied on top, and a reviewer that will not
+conform is dropped from the editor's input, by name and with its reason in the
+run manifest, instead of poisoning the report. `--strict-reviewers` makes it
+stop the run instead.
+
+The editor's report is its stdout. If it fails `check_final_report.py`, the
+report alone is sent back once with the failures quoted, which costs one small
+call rather than a second editor run.
 
 Reviewers run with `Read`, `Grep`, `Glob` and optionally `WebSearch`. No write
 tool is ever granted, which the test suite asserts.
@@ -379,7 +388,7 @@ something it does not mean.
 
 ## Status
 
-277 passing tests, run on Linux and Windows in CI: the upstream suite, the
+305 passing tests, run on Linux and Windows in CI: the upstream suite, the
 schema-contract layer, the LaTeX source front-end, the environment and
 authentication checks, the mock backend, and an end-to-end pipeline run on a
 fixture manuscript.
@@ -390,6 +399,17 @@ no undefined labels), nineteen reviewers ran in parallel batches over about 80
 minutes and every one returned schema-valid output on the first attempt. The
 retry and fail-loud branches, which a clean run never reaches, are covered by
 the mock backend instead.
+
+A later run on a 68-page PDF with all twenty substantive auditors was less
+clean, and is what the resilience fixes and `tests/test_run_resilience.py`
+come from. Four auditors needed their schema retry and passed. One passed the
+schema but broke a semantic rule that was then checked only after the whole
+panel, which stopped the run before the editor. One returned a valid but blind
+reply. The editor bundle (1.84 MB minified) exceeded the old 1 MB input cap.
+`refresh_editor.py --run-editor` still passed a Codex-only flag. And the
+editor's report failed the final check on a single stray identifier. Each of
+these is now retried, repaired or tolerated where it happens, rather than
+discovered at the end.
 
 Calibration is on by default, so a completed run also reports how many
 defects it was able to plant and detect. That number is the honest check on

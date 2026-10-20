@@ -86,7 +86,10 @@ If the user asks for a repository manuscript without saying which, prefer
 `--source` for a substantive check and say plainly that layout is not covered;
 suggest `--build` as a second pass when submission is close.
 
-Add `--paper-id <id>` when the filename is not the identifier you want.
+Add `--paper-id <id>` when the filename is not the identifier you want. The id
+is slugified (lowercase, runs of other characters become `-`), so
+`My_Paper v2` becomes `my-paper-v2`; the first line of the run, `[paper] ...`,
+prints the id actually used, and every later path and command takes that one.
 Add `--model <id>` to override `config/defaults.toml`.
 
 Add `--backend mock` to run the entire pipeline with no model calls. Every
@@ -128,23 +131,44 @@ resolve from where they are standing.
 
 ## When something fails
 
-A failed auditor is usually a schema-contract failure, not a crash. Claude Code
-has no provider-side structured output, so the schema travels in the prompt and
-is enforced afterwards; a reviewer that drifts is asked once more with the
-errors quoted, then fails.
+A failed auditor is usually a contract failure, not a crash. Claude Code has no
+provider-side structured output, so the schema travels in the prompt and is
+enforced afterwards. As each auditor finishes, its reply is checked against the
+schema **and** the semantic rules (location precision, cannot-verify discipline,
+provenance); a reviewer that breaks either is asked once more with the errors
+quoted, then fails. A reply whose every finding is `cannot_verify` with no
+source object, which is what an auditor that could not open the parse returns,
+is retried once the same way; if it comes back blind again the run continues
+and prints a `[warn]` line for it.
 
+- An auditor that still fails is **dropped**: the run prints `[drop] <name>:
+  <reason>`, records it under `dropped_reviewers` in
+  `work/<paper_id>/run_manifest.json`, and the editor works from the rest. Say
+  which auditor dropped out when reporting. `--strict-reviewers` restores the
+  old behaviour of stopping instead.
 - Read `work/<paper_id>/reviews/<auditor>.json.raw.txt` for what the model
-  actually said.
-- Read `work/<paper_id>/logs/<auditor>.stderr.log` for the validation errors.
-- One auditor failing does not invalidate the rest; the editor works from what
-  validated. Say which auditor dropped out when reporting.
+  actually said, and `work/<paper_id>/logs/<auditor>.stderr.log` for the
+  validation errors.
+- If the editor's report fails `check_final_report.py`, the report alone is
+  sent back once with the failures quoted (a cheap call, not a second editor
+  run). The rejected draft is kept at `work/<paper_id>/editor/report.rejected.md`.
+- The editor's input travels as one prompt and is capped at 2.5 MB
+  (`build_editor_input.py --max-bytes`). A full twenty-auditor panel on a long
+  paper comes to about 1.8 MB after lossless minification. The builder never
+  truncates evidence; it stops instead.
 
-Rerun the editor alone, without redoing the panel:
+Rerun the editor alone, without redoing the panel, for example after rerunning
+or fixing one auditor:
 
 ```bash
 cd "$ROBUSTO_REPO"
 python scripts/refresh_editor.py --paper-id <id> --run-editor
 ```
+
+It revalidates every auditor output, drops any that fail (unless
+`--strict-reviewers`), rebuilds the bundle and editor input, runs the editor
+the same way the full pipeline does, and checks and if needed repairs the
+report. `--max-editor-input-bytes` overrides the input cap.
 
 ## Reporting to the user
 

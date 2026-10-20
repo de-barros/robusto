@@ -34,6 +34,7 @@ from claude_backend import (
     structured_prompt,
 )
 from reviewer_config import ReviewerConfig, load_reviewers_config, write_reviewers_config
+from validate_review_json import is_cannot_verify, semantic_errors
 
 
 SELECTOR_TEMPLATE = "reviewer_selection.txt"
@@ -324,12 +325,24 @@ def wait_reviewer(
     process._reviewer_stderr_handle.close()  # type: ignore[attr-defined]
     ctx = getattr(process, "_robusto_retry", None)
     if returncode == 0 and ctx is not None:
-        ok, errors = finalize_structured_output(
-            ctx["raw_path"], ctx["output_path"], ctx["schema_path"]
-        )
-        if not ok:
-            print(f"[retry] {reviewer.name}: {errors[0] if errors else 'invalid output'}")
-            returncode = retry_structured_reviewer(reviewer, ctx, errors, stderr_path)
+        errors = structured_reviewer_errors(reviewer, ctx)
+        if errors:
+            print(f"[retry] {reviewer.name}: {errors[0]}")
+            returncode = retry_structured_reviewer(
+                reviewer, ctx, errors, stderr_path, timeout_seconds
+            )
+        else:
+            blind = blind_run_errors(ctx["output_path"])
+            if blind:
+                print(f"[retry] {reviewer.name}: {blind[0]}")
+                returncode = retry_structured_reviewer(
+                    reviewer, ctx, blind, stderr_path, timeout_seconds
+                )
+                if returncode == 0 and blind_run_errors(ctx["output_path"]):
+                    print(
+                        f"[warn] {reviewer.name}: still cites no manuscript artifact after "
+                        "one retry; its findings are all cannot_verify"
+                    )
     if returncode == 0:
         print(f"[ok] {reviewer.name}")
     else:
@@ -347,11 +360,55 @@ def wait_reviewer(
     return RunResult(reviewer.name, returncode, stdout_path, stderr_path)
 
 
+def structured_reviewer_errors(reviewer: ReviewerConfig, ctx: dict) -> list[str]:
+    """Schema and semantic errors in a reviewer's captured reply, or [] if valid.
+
+    The semantic rules (location precision, cannot-verify discipline,
+    provenance) used to be checked only after the whole panel had finished, so
+    one slip there stopped the run after every auditor had been paid for. They
+    are checked here instead, where a failure can still be retried.
+    """
+    ok, errors = finalize_structured_output(
+        ctx["raw_path"], ctx["output_path"], ctx["schema_path"]
+    )
+    if not ok:
+        return errors or ["invalid output"]
+    payload = json.loads(ctx["output_path"].read_text(encoding="utf-8"))
+    return semantic_errors(payload, [reviewer], repo=ctx["cwd"])
+
+
+def blind_run_errors(output_path: Path) -> list[str]:
+    """Flag a reply in which the reviewer evidently read nothing.
+
+    A reviewer whose tool calls fail can still return schema-valid JSON whose
+    every finding is cannot_verify and cites no source object, reporting that
+    the parsed artifacts could not be read. That is a failed run, not an audit,
+    and it is worth one retry.
+    """
+    try:
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    findings = [f for f in payload.get("findings") or [] if isinstance(f, dict)]
+    if not findings:
+        return []
+    if any(f.get("source_objects") for f in findings):
+        return []
+    if not all(is_cannot_verify(f) for f in findings):
+        return []
+    return [
+        "every finding is cannot_verify and none cites a source object, so this run "
+        "read no manuscript artifact. The parsed artifacts named in the prompt exist "
+        "and are readable with the Read, Grep and Glob tools: open them and redo the audit."
+    ]
+
+
 def retry_structured_reviewer(
     reviewer: ReviewerConfig,
     ctx: dict,
     errors: list[str],
     stderr_path: Path,
+    timeout_seconds: float | None = None,
 ) -> int:
     """Re-ask once, quoting the validation failures.
 
@@ -360,20 +417,24 @@ def retry_structured_reviewer(
     failure is left to fail loudly rather than retried into a loop.
     """
     prompt = retry_prompt(ctx["prompt_source"], ctx["schema_path"], errors)
-    completed = subprocess.run(
-        ctx["command"],
-        input=prompt,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        cwd=ctx["cwd"],
-    )
+    try:
+        completed = subprocess.run(
+            ctx["command"],
+            input=prompt,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=ctx["cwd"],
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        with stderr_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"\nRetry timed out after {timeout_seconds:.0f} seconds.\n")
+        return 124
     ctx["raw_path"].write_text(completed.stdout or "", encoding="utf-8")
-    ok, retry_errors = finalize_structured_output(
-        ctx["raw_path"], ctx["output_path"], ctx["schema_path"]
-    )
-    if ok:
+    retry_errors = structured_reviewer_errors(reviewer, ctx)
+    if not retry_errors:
         return 0
     with stderr_path.open("a", encoding="utf-8") as handle:
         handle.write("\nSchema contract not met after one retry:\n")
@@ -426,6 +487,125 @@ def recover_editor_report_if_needed(report_path: Path, editor_stderr_path: Path)
         )
     report_path.write_text(recovered, encoding="utf-8")
     print(f"[recover] final report recovered from editor transcript: {editor_stderr_path}")
+
+
+def final_report_failures(
+    repo: Path, report_path: Path, bundle_path: Path, log_dir: Path
+) -> list[str]:
+    """Run check_final_report.py and return its failure lines ([] when VALID)."""
+    result = run_command(
+        "check-final-report",
+        [
+            sys.executable,
+            "scripts/check_final_report.py",
+            "--input",
+            str(report_path.relative_to(repo)),
+            "--bundle",
+            str(bundle_path.relative_to(repo)),
+        ],
+        repo,
+        log_dir,
+    )
+    if result.returncode == 0:
+        return []
+    output = result.stdout_path.read_text(encoding="utf-8", errors="replace")
+    failures = [line[2:].strip() for line in output.splitlines() if line.startswith("- ")]
+    return failures or [f"check_final_report.py exited {result.returncode}; see {result.stderr_path}"]
+
+
+def editor_repair_prompt(report: str, failures: list[str], bundle: dict) -> str:
+    """A corrective prompt carrying only the report, the failures and the id map.
+
+    The full editor input is far larger than what a repair needs, so the
+    report is corrected on its own rather than regenerated.
+    """
+    rows = []
+    for finding in bundle.get("canonical_findings", []):
+        if not isinstance(finding, dict):
+            continue
+        source_ids = ", ".join(
+            str(source.get("id")) for source in finding.get("source_findings", []) if isinstance(source, dict)
+        )
+        rows.append(f"- {finding.get('canonical_id')}: {source_ids}")
+    failure_lines = "\n".join(f"- {failure}" for failure in failures)
+    id_map = "\n".join(rows)
+    return (
+        "You wrote the editor's report below. An automated check rejected it for these reasons:\n\n"
+        f"{failure_lines}\n\n"
+        "Return the complete corrected report as Markdown, starting with the line "
+        "'# Multi-Agent Paper Review Report'. Change only what the check requires and keep every "
+        "finding, table and section otherwise as it is. Canonical and source finding identifiers "
+        "may appear only in the '## Appendix: Traceability Map' section; elsewhere, refer to "
+        "findings by their heading or description instead. Do not use tools.\n\n"
+        "Canonical findings and their source finding identifiers, for the traceability map:\n\n"
+        f"{id_map}\n\n"
+        "<report>\n"
+        f"{report}\n"
+        "</report>\n"
+    )
+
+
+def run_editor_pass(
+    *,
+    repo: Path,
+    log_dir: Path,
+    editor_input_path: Path,
+    report_path: Path,
+    bundle_path: Path,
+    model: str | None,
+    reasoning_effort: str | None,
+    timeout_seconds: float | None,
+) -> None:
+    """Run the editor, recover its report if needed, and check it.
+
+    A report that fails check_final_report.py is sent back once with the
+    failures quoted, then checked again; a second failure raises. The rejected
+    first draft is kept beside the bundle for inspection.
+    """
+    editor_started_at = time.time() - 1.0
+    editor_result = run_required(
+        "editor",
+        [*model_exec_command(model=model, reasoning_effort=reasoning_effort)],
+        repo,
+        log_dir,
+        input_text=editor_input_path.read_text(encoding="utf-8"),
+        capture_text_to=report_path,
+        timeout_seconds=timeout_seconds,
+    )
+    require_fresh_file(report_path, editor_started_at, "final report")
+    recover_editor_report_if_needed(report_path, editor_result.stderr_path)
+
+    failures = final_report_failures(repo, report_path, bundle_path, log_dir)
+    if not failures:
+        return
+    print(f"[retry] editor report: {failures[0]}")
+    rejected = bundle_path.parent / "report.rejected.md"
+    draft = report_path.read_text(encoding="utf-8")
+    rejected.write_text(draft, encoding="utf-8")
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    repair_result = run_required(
+        "editor-repair",
+        [*model_exec_command(model=model, reasoning_effort=reasoning_effort)],
+        repo,
+        log_dir,
+        input_text=editor_repair_prompt(draft, failures, bundle),
+        capture_text_to=report_path,
+        timeout_seconds=timeout_seconds,
+    )
+    if not plausible_editor_report(report_path.read_text(encoding="utf-8")):
+        recovered = extract_editor_report_from_transcript(
+            repair_result.stdout_path.read_text(encoding="utf-8", errors="replace")
+        )
+        if recovered is not None:
+            report_path.write_text(recovered, encoding="utf-8")
+    failures = final_report_failures(repo, report_path, bundle_path, log_dir)
+    if failures:
+        report_path.write_text(draft, encoding="utf-8")
+        raise RuntimeError(
+            "final report failed check_final_report.py after one repair: "
+            + "; ".join(failures[:5])
+            + f". The editor's first draft is at {report_path}."
+        )
 
 
 def validate_reviewer_json(path: Path, expected_reviewer: str, paper_id: str) -> None:
@@ -717,7 +897,13 @@ def run_reviewer_batch(
     reasoning_effort: str | None = None,
     max_parallel: int = 4,
     timeout_seconds: float | None = None,
+    failed: list[str] | None = None,
 ) -> float:
+    """Run reviewers in parallel batches.
+
+    With ``failed`` given, a reviewer that fails is recorded there by name and
+    the remaining batches still run; without it, the first failing batch raises.
+    """
     if not reviewers:
         return time.time() - 1.0
     reviewer_started_at = time.time() - 1.0
@@ -738,7 +924,9 @@ def run_reviewer_batch(
         ]
         reviewer_results = [wait_reviewer(*item, timeout_seconds=timeout_seconds) for item in running]
         failed_reviewers = [result for result in reviewer_results if result.returncode != 0]
-        if failed_reviewers:
+        if failed_reviewers and failed is not None:
+            failed.extend(result.label for result in failed_reviewers)
+        elif failed_reviewers:
             failures = ", ".join(
                 f"{result.label} ({result.returncode})" for result in failed_reviewers
             )
@@ -1001,6 +1189,15 @@ def main() -> int:
         "--keep-going",
         action="store_true",
         help="Continue validating remaining reviewer outputs after a reviewer-output validation error.",
+    )
+    parser.add_argument(
+        "--strict-reviewers",
+        action="store_true",
+        help=(
+            "Stop the run when any substantive reviewer fails. By default a reviewer that "
+            "still fails after its retry is dropped, the editor works from the rest, and "
+            "the drop is recorded in the run manifest and printed."
+        ),
     )
     parser.add_argument("--reviewers-config", default="config/reviewers.json")
     parser.add_argument(
@@ -1357,6 +1554,7 @@ def main() -> int:
         )
         return 0
 
+    run_failures: list[str] | None = None if args.strict_reviewers else []
     reviewer_started_at = run_reviewer_batch(
         standard_reviewers,
         repo,
@@ -1368,20 +1566,71 @@ def main() -> int:
         args.reasoning_effort,
         args.max_parallel_reviewers,
         args.agent_timeout_minutes * 60,
+        failed=run_failures,
     )
-    validation_errors = validate_reviewer_batch(
-        standard_reviewers,
-        reviewer_started_at,
-        repo,
-        paper_id,
-        reviews_dir,
-        schema_path,
-        active_reviewers_config,
-        log_dir,
-        args.keep_going,
-    )
-    if validation_errors:
-        raise RuntimeError("Reviewer validation failed: " + "; ".join(validation_errors))
+    if args.strict_reviewers:
+        validation_errors = validate_reviewer_batch(
+            standard_reviewers,
+            reviewer_started_at,
+            repo,
+            paper_id,
+            reviews_dir,
+            schema_path,
+            active_reviewers_config,
+            log_dir,
+            args.keep_going,
+        )
+        if validation_errors:
+            raise RuntimeError("Reviewer validation failed: " + "; ".join(validation_errors))
+    else:
+        dropped = {name: "reviewer run failed after one retry" for name in run_failures or []}
+        for reviewer in standard_reviewers:
+            if reviewer.name in dropped:
+                continue
+            errors = validate_reviewer_batch(
+                [reviewer],
+                reviewer_started_at,
+                repo,
+                paper_id,
+                reviews_dir,
+                schema_path,
+                active_reviewers_config,
+                log_dir,
+                keep_going=True,
+            )
+            if errors:
+                dropped[reviewer.name] = "; ".join(errors)
+        if dropped:
+            surviving = [r for r in standard_reviewers if r.name not in dropped]
+            if not surviving:
+                raise RuntimeError(
+                    "Every substantive reviewer failed: "
+                    + "; ".join(f"{name}: {why}" for name, why in dropped.items())
+                )
+            for name, why in dropped.items():
+                print(f"[drop] {name}: {why}")
+            run_manifest["dropped_reviewers"] = [
+                {"name": name, "reason": why} for name, why in dropped.items()
+            ]
+            write_run_manifest(paths.run_manifest_path, run_manifest)
+            standard_reviewers = surviving
+            write_reviewers_config(
+                selected_reviewers_config_path, [*preflight_reviewers, *standard_reviewers]
+            )
+            run_required(
+                "render-editor-prompt",
+                render_prompts_command(
+                    paper_id=paper_id,
+                    parsed_dir=parsed_dir,
+                    reviews_dir=reviews_dir,
+                    schema_path=schema_path,
+                    prompts_dir=prompts_dir,
+                    reviewers_config=active_reviewers_config,
+                    repo=repo,
+                ),
+                repo,
+                log_dir,
+            )
 
     run_required(
         "normalize",
@@ -1423,32 +1672,15 @@ def main() -> int:
         log_dir,
     )
 
-    editor_started_at = time.time() - 1.0
-    editor_input = editor_input_path.read_text(encoding="utf-8")
-    editor_result = run_required(
-        "editor",
-        [*model_exec_command(model=args.model, reasoning_effort=args.reasoning_effort)],
-        repo,
-        log_dir,
-        input_text=editor_input,
-        capture_text_to=report_path,
+    run_editor_pass(
+        repo=repo,
+        log_dir=log_dir,
+        editor_input_path=editor_input_path,
+        report_path=report_path,
+        bundle_path=bundle_path,
+        model=args.model,
+        reasoning_effort=args.reasoning_effort,
         timeout_seconds=args.agent_timeout_minutes * 60,
-    )
-    require_fresh_file(report_path, editor_started_at, "final report")
-    recover_editor_report_if_needed(report_path, editor_result.stderr_path)
-
-    check_result = run_required(
-        "check-final-report",
-        [
-            sys.executable,
-            "scripts/check_final_report.py",
-            "--input",
-            str(report_path.relative_to(repo)),
-            "--bundle",
-            str(bundle_path.relative_to(repo)),
-        ],
-        repo,
-        log_dir,
     )
     run_manifest.update(
         {

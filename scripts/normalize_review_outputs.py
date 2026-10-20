@@ -449,6 +449,10 @@ def add_to_group(group: dict[str, Any], reviewer: str, finding: dict[str, Any]) 
         merge_anchor(reviewer, finding, group["issue_class"])
     )
     group["source_findings"].append({"reviewer": reviewer, "id": finding_id})
+    # The evidence summary and cannot-verify reason are not repeated here: each
+    # is kept once, keyed by reviewer and id, in the group's
+    # evidence_summaries and cannot_verify_reasons. Repeating them pushed a
+    # full twenty-auditor bundle well past the editor's input budget.
     group["source_finding_details"].append(
         {
             "reviewer": reviewer,
@@ -457,11 +461,9 @@ def add_to_group(group: dict[str, Any], reviewer: str, finding: dict[str, Any]) 
             "issue_type": finding.get("issue_type"),
             "finding_summary": finding_summary(finding),
             "claim_text": finding.get("claim_text"),
-            "evidence_summary": finding.get("evidence_summary"),
             "severity": finding.get("severity"),
             "assessment": finding.get("assessment"),
             "confidence": finding.get("confidence"),
-            "cannot_verify_reason": finding.get("cannot_verify_reason"),
             "location": location,
         }
     )

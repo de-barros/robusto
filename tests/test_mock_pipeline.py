@@ -119,7 +119,8 @@ class MockPipeline(unittest.TestCase):
 
 
 class MockPipelineFailure(unittest.TestCase):
-    """A reviewer that never meets the contract must stop the run, by name."""
+    """A reviewer that never meets the contract is dropped by name, or under
+    --strict-reviewers stops the run."""
 
     def setUp(self) -> None:
         shutil.rmtree(WORK, ignore_errors=True)
@@ -127,8 +128,18 @@ class MockPipelineFailure(unittest.TestCase):
 
     tearDown = setUp
 
-    def test_persistent_drift_fails_loudly_after_one_retry(self) -> None:
-        result = run_pipeline(ROBUSTO_MOCK_FAIL="robustness_auditor")
+    def test_persistent_drift_is_dropped_and_the_report_still_written(self) -> None:
+        result = run_pipeline("--no-calibration", ROBUSTO_MOCK_FAIL="robustness_auditor")
+        self.assertEqual(result.returncode, 0, result.stdout[-2000:] + result.stderr[-2000:])
+        self.assertIn("[retry] robustness_auditor", result.stdout)
+        self.assertIn("[drop] robustness_auditor", result.stdout)
+        run = json.loads((WORK / "run_manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual([d["name"] for d in run["dropped_reviewers"]], ["robustness_auditor"])
+        self.assertNotIn("robustness_auditor", run["selected_reviewers"])
+        self.assertTrue((OUTPUTS / "report.md").exists())
+
+    def test_persistent_drift_fails_loudly_under_strict_reviewers(self) -> None:
+        result = run_pipeline("--strict-reviewers", ROBUSTO_MOCK_FAIL="robustness_auditor")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("[retry] robustness_auditor", result.stdout)
         self.assertIn("[fail] robustness_auditor exited 65", result.stdout)

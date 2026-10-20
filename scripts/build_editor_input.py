@@ -23,7 +23,14 @@ SEVERITY_POINTS = {"high": 60, "medium": 35, "low": 10}
 CONFIDENCE_POINTS = {"high": 15, "medium": 8, "low": 0}
 TOP_SYNTHESIS_SCORE = 55
 MAX_SYNTHESIS_FINDINGS = 8
-MAX_EDITOR_INPUT_BYTES = 1_000_000
+# The editor's whole input travels as one prompt, so this guards the model's
+# context. A full twenty-auditor panel on a 68-page paper produced 1.84 MB
+# after minification, which the editor accepted; 1 MB stopped every such run
+# before the editor started. --max-bytes overrides it.
+MAX_EDITOR_INPUT_BYTES = 2_500_000
+# Indentation is kept only while it is cheap. Above this the bundle is
+# minified, which is lossless and saves about a fifth of the bytes.
+PRETTY_EDITOR_INPUT_BYTES = 1_000_000
 
 
 def read(path: Path) -> str:
@@ -580,12 +587,14 @@ def editor_input_document(
 
 
 def bounded_editor_input(
-    document_args: dict[str, Any], max_bytes: int = MAX_EDITOR_INPUT_BYTES
+    document_args: dict[str, Any],
+    max_bytes: int = MAX_EDITOR_INPUT_BYTES,
+    pretty_max_bytes: int = PRETTY_EDITOR_INPUT_BYTES,
 ) -> tuple[str, str, int]:
     editor_input = editor_input_document(**document_args, compact_bundle=False)
     serialization = "pretty"
     byte_count = len(editor_input.encode("utf-8"))
-    if byte_count > max_bytes:
+    if byte_count > min(max_bytes, pretty_max_bytes):
         editor_input = editor_input_document(**document_args, compact_bundle=True)
         serialization = "minified"
         byte_count = len(editor_input.encode("utf-8"))
@@ -593,7 +602,8 @@ def bounded_editor_input(
         raise ValueError(
             f"Editor input is {byte_count:,} UTF-8 bytes after lossless minification, "
             f"exceeding the {max_bytes:,}-byte safety budget. "
-            "The builder will not truncate evidence."
+            "The builder will not truncate evidence; raise --max-bytes if the model's "
+            "context allows."
         )
     return editor_input, serialization, byte_count
 
@@ -606,6 +616,12 @@ def main() -> int:
     parser.add_argument("--reviews-dir", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--reviewers-config", default="config/reviewers.json")
+    parser.add_argument(
+        "--max-bytes",
+        type=int,
+        default=MAX_EDITOR_INPUT_BYTES,
+        help=f"Editor input budget in UTF-8 bytes (default {MAX_EDITOR_INPUT_BYTES:,}).",
+    )
     args = parser.parse_args()
 
     editor_prompt = Path(args.editor_prompt)
@@ -647,7 +663,9 @@ def main() -> int:
         "review_json_by_name": review_json_by_name,
         "selection_json": selection_json,
     }
-    editor_input, serialization, byte_count = bounded_editor_input(document_args)
+    editor_input, serialization, byte_count = bounded_editor_input(
+        document_args, max_bytes=args.max_bytes
+    )
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(editor_input, encoding="utf-8")

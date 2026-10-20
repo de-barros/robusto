@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from pipeline_paths import paper_run_paths
-from review_paper import enforce_preflight_gate
-from reviewer_config import load_reviewers_config
+from review_paper import enforce_preflight_gate, run_editor_pass
+from reviewer_config import load_reviewers_config, write_reviewers_config
 
 
 def repo_root() -> Path:
@@ -35,16 +35,60 @@ def run_command(command: list[str], cwd: Path, *, input_text: str | None = None)
         raise RuntimeError(f"Command failed with exit code {completed.returncode}: {' '.join(command)}")
 
 
-def model_exec_command(
-    model: str | None = None, reasoning_effort: str | None = None
-) -> list[str]:
-    from review_paper import model_exec_command as resolve_model_exec_command
+def validated_editor_roster(
+    selected: list, reviews_dir: Path, repo: Path, *, strict: bool
+) -> tuple[list, dict[str, str]]:
+    """Validate each selected reviewer's output and return the editor's roster.
 
-    return resolve_model_exec_command(model=model, reasoning_effort=reasoning_effort)
+    A preflight reviewer must validate. A substantive reviewer whose output is
+    missing or invalid is dropped, and the editor works from the rest, unless
+    ``strict`` is set, in which case the first such reviewer stops the refresh.
+    """
+    roster = []
+    dropped: dict[str, str] = {}
+    for reviewer in selected:
+        output = reviews_dir / reviewer.output
+        reason = None
+        if not output.exists():
+            reason = f"missing output {output.relative_to(repo)}"
+        else:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/validate_review_json.py",
+                    "--schema",
+                    "schemas/reviewer_output.schema.json",
+                    "--input",
+                    str(output.relative_to(repo)),
+                ],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if completed.returncode != 0:
+                lines = [line[2:] for line in completed.stdout.splitlines() if line.startswith("- ")]
+                reason = "invalid output: " + ("; ".join(lines[:3]) or completed.stdout.strip()[:200])
+        if reason is not None and (strict or reviewer.stage == "preflight"):
+            raise RuntimeError(f"{reviewer.name}: {reason}")
+        if reason is not None:
+            dropped[reviewer.name] = reason
+            continue
+        if reviewer.stage == "preflight":
+            enforce_preflight_gate(reviewer, output)
+        roster.append(reviewer)
+    if not any(reviewer.stage == "review" for reviewer in roster):
+        raise RuntimeError("No substantive reviewer output validated; nothing for the editor to synthesise.")
+    return roster, dropped
 
 
 def mark_run_manifest_complete(
-    manifest_path: Path, report: Path, repo: Path, reviewer_names: list[str]
+    manifest_path: Path,
+    report: Path,
+    repo: Path,
+    reviewer_names: list[str],
+    dropped: dict[str, str] | None = None,
 ) -> None:
     if not manifest_path.exists():
         return
@@ -62,6 +106,10 @@ def mark_run_manifest_complete(
             "report": str(report.relative_to(repo)),
         }
     )
+    if dropped:
+        manifest["dropped_reviewers"] = [
+            {"name": name, "reason": reason} for name, reason in dropped.items()
+        ]
     manifest_path.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
@@ -93,6 +141,26 @@ def main() -> int:
             "Accepted for compatibility; Claude Code has no reasoning-effort control, so it is ignored."
         ),
     )
+    parser.add_argument(
+        "--strict-reviewers",
+        action="store_true",
+        help=(
+            "Stop when any reviewer output is missing or invalid. By default a substantive "
+            "reviewer that fails validation is dropped and the editor works from the rest."
+        ),
+    )
+    parser.add_argument(
+        "--agent-timeout-minutes",
+        type=float,
+        default=45.0,
+        help="Timeout for the editor agent and its one repair pass. Default: 45 minutes.",
+    )
+    parser.add_argument(
+        "--max-editor-input-bytes",
+        type=int,
+        default=None,
+        help="Override the editor input budget passed to build_editor_input.py --max-bytes.",
+    )
     args = parser.parse_args()
 
     repo = repo_root()
@@ -119,31 +187,20 @@ def main() -> int:
     editor_dir.mkdir(parents=True, exist_ok=True)
     outputs_dir.mkdir(parents=True, exist_ok=True)
 
-    selected_config_relative = str(selected_reviewers.relative_to(repo))
     selected = load_reviewers_config(selected_reviewers)
-    review_stage = [reviewer for reviewer in selected if reviewer.stage == "review"]
-    require_paths(
-        {
-            reviewer.name: reviews_dir / reviewer.output
-            for reviewer in selected
-        }
+    editor_roster, dropped = validated_editor_roster(
+        selected, reviews_dir, repo, strict=args.strict_reviewers
     )
-    for reviewer in selected:
-        run_command(
-            [
-                sys.executable,
-                "scripts/validate_review_json.py",
-                "--schema",
-                "schemas/reviewer_output.schema.json",
-                "--input",
-                str((reviews_dir / reviewer.output).relative_to(repo)),
-                "--reviewers-config",
-                selected_config_relative,
-            ],
-            repo,
-        )
-        if reviewer.stage == "preflight":
-            enforce_preflight_gate(reviewer, reviews_dir / reviewer.output)
+    for name, why in dropped.items():
+        print(f"[drop] {name}: {why}")
+    if dropped:
+        roster_path = editor_dir / "editor_reviewers.json"
+        write_reviewers_config(roster_path, editor_roster)
+    else:
+        roster_path = selected_reviewers
+    roster_relative = str(roster_path.relative_to(repo))
+    review_stage = [reviewer for reviewer in editor_roster if reviewer.stage == "review"]
+
     run_command(
         [
             sys.executable,
@@ -155,7 +212,7 @@ def main() -> int:
             "--output",
             str(bundle.relative_to(repo)),
             "--reviewers-config",
-            selected_config_relative,
+            roster_relative,
         ],
         repo,
     )
@@ -177,58 +234,50 @@ def main() -> int:
             "--editor-bundle-path",
             str(bundle.relative_to(repo)),
             "--reviewers-config",
-            selected_config_relative,
+            roster_relative,
         ],
         repo,
     )
-    run_command(
-        [
-            sys.executable,
-            "scripts/build_editor_input.py",
-            "--paper-id",
-            args.paper_id,
-            "--editor-prompt",
-            str(editor_prompt.relative_to(repo)),
-            "--bundle",
-            str(bundle.relative_to(repo)),
-            "--reviews-dir",
-            str(reviews_dir.relative_to(repo)),
-            "--output",
-            str(editor_input.relative_to(repo)),
-            "--reviewers-config",
-            selected_config_relative,
-        ],
-        repo,
-    )
+    build_command = [
+        sys.executable,
+        "scripts/build_editor_input.py",
+        "--paper-id",
+        args.paper_id,
+        "--editor-prompt",
+        str(editor_prompt.relative_to(repo)),
+        "--bundle",
+        str(bundle.relative_to(repo)),
+        "--reviews-dir",
+        str(reviews_dir.relative_to(repo)),
+        "--output",
+        str(editor_input.relative_to(repo)),
+        "--reviewers-config",
+        roster_relative,
+    ]
+    if args.max_editor_input_bytes is not None:
+        build_command += ["--max-bytes", str(args.max_editor_input_bytes)]
+    run_command(build_command, repo)
 
     if args.run_editor:
-        editor_text = editor_input.read_text(encoding="utf-8")
-        run_command(
-            [
-                *model_exec_command(args.model, args.reasoning_effort),
-                "--output-last-message",
-                str(report.relative_to(repo)),
-                "-",
-            ],
-            repo,
-            input_text=editor_text,
-        )
-        run_command(
-            [
-                sys.executable,
-                "scripts/check_final_report.py",
-                "--input",
-                str(report.relative_to(repo)),
-                "--bundle",
-                str(bundle.relative_to(repo)),
-            ],
-            repo,
+        # The editor's report is its stdout, exactly as in review_paper.py. The
+        # Codex-era --output-last-message flag this used to pass does not exist
+        # in the Claude Code CLI, so every --run-editor call failed on it.
+        run_editor_pass(
+            repo=repo,
+            log_dir=paths.log_dir,
+            editor_input_path=editor_input,
+            report_path=report,
+            bundle_path=bundle,
+            model=args.model,
+            reasoning_effort=args.reasoning_effort,
+            timeout_seconds=args.agent_timeout_minutes * 60,
         )
         mark_run_manifest_complete(
             paths.run_manifest_path,
             report,
             repo,
             [reviewer.name for reviewer in review_stage],
+            dropped,
         )
 
     print(f"editor input refreshed: {editor_input.relative_to(repo)}")
