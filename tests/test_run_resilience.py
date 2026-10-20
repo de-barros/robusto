@@ -295,7 +295,10 @@ class EditorPassUsesStdoutAndRepairsOnce(unittest.TestCase):
             return review_paper.RunResult(label, 0, tmp / f"{label}.out", tmp / f"{label}.err")
 
         results = iter(checks)
-        with mock.patch.object(review_paper, "run_required", fake_run_required), mock.patch.object(
+        # CI has no Claude Code CLI, so the command must not be resolved for real.
+        with mock.patch.object(
+            review_paper, "model_exec_command", lambda **kw: ["claude", "-p"]
+        ), mock.patch.object(review_paper, "run_required", fake_run_required), mock.patch.object(
             review_paper, "recover_editor_report_if_needed", lambda *a: None
         ), mock.patch.object(review_paper, "plausible_editor_report", lambda text: True), mock.patch.object(
             review_paper, "final_report_failures", lambda *a: next(results)
