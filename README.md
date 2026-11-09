@@ -400,7 +400,7 @@ something it does not mean.
 
 ## Status
 
-323 passing tests, run on Linux and Windows in CI: the upstream suite, the
+325 passing tests, run on Linux and Windows in CI: the upstream suite, the
 schema-contract layer, the LaTeX source front-end, the environment and
 authentication checks, the mock backend, and an end-to-end pipeline run on a
 fixture manuscript.

@@ -211,34 +211,64 @@ def extract_json_object(raw: str) -> str | None:
         if _is_json(candidate):
             return candidate
 
+    # Only top-level objects are candidates. When one fails to parse, the scan
+    # resumes after it rather than inside it: falling back to a nested object
+    # (one finding of a malformed reply) produced a schema error that blamed
+    # the root for missing every field, which a retry could not act on.
     start = raw.find("{")
     while start != -1:
-        depth = 0
-        in_string = False
-        escaped = False
-        for i in range(start, len(raw)):
-            ch = raw[i]
-            if in_string:
-                if escaped:
-                    escaped = False
-                elif ch == "\\":
-                    escaped = True
-                elif ch == '"':
-                    in_string = False
-                continue
-            if ch == '"':
-                in_string = True
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    candidate = raw[start : i + 1]
-                    if _is_json(candidate):
-                        return candidate
-                    break
-        start = raw.find("{", start + 1)
+        end = _balanced_end(raw, start)
+        if end is None:
+            return None
+        candidate = raw[start : end + 1]
+        if _is_json(candidate):
+            return candidate
+        start = raw.find("{", end + 1)
     return None
+
+
+def _balanced_end(raw: str, start: int) -> int | None:
+    """Index of the brace closing the object opened at ``start``, or None."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(raw)):
+        ch = raw[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def json_reply_error(raw: str) -> str:
+    """Say why the reply's first top-level object is not valid JSON, and where."""
+    start = raw.find("{")
+    if start == -1:
+        head = raw.strip()[:200].replace("\n", " ")
+        return f"reply contained no parseable JSON object; begins: {head!r}"
+    try:
+        json.JSONDecoder().raw_decode(raw[start:])
+    except json.JSONDecodeError as exc:
+        position = start + exc.pos
+        context = raw[max(0, position - 80) : position + 40].replace("\n", " ")
+        return (
+            f"reply is not valid JSON: {exc.msg} at character {position}, near {context!r}. "
+            "Return the whole object again with that syntax error corrected."
+        )
+    return "reply contained no parseable JSON object"
 
 
 def _is_json(text: str) -> bool:
@@ -517,8 +547,7 @@ def finalize_structured_output(
     raw = raw_path.read_text(encoding="utf-8", errors="replace")
     extracted = extract_json_object(raw)
     if extracted is None:
-        head = raw.strip()[:200].replace("\n", " ")
-        return False, [f"reply contained no parseable JSON object; begins: {head!r}"]
+        return False, [json_reply_error(raw)]
 
     payload = json.loads(extracted)
     errors = schema_errors(payload, schema_path)

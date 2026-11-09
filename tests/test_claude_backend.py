@@ -29,6 +29,7 @@ from claude_backend import (  # noqa: E402
     cli_login_hint,
     claude_exec_command,
     extract_json_object,
+    json_reply_error,
     finalize_structured_output,
     retry_prompt,
     schema_errors,
@@ -76,6 +77,19 @@ class ExtractJsonObject(unittest.TestCase):
     def test_skips_an_unparseable_first_candidate(self) -> None:
         raw = 'noise {not json at all} then {"a": 1}'
         self.assertEqual(json.loads(extract_json_object(raw)), {"a": 1})
+
+    def test_never_falls_back_to_an_object_nested_in_a_malformed_reply(self) -> None:
+        # A misplaced brace deep in a long reply: the findings inside still parse
+        # on their own, but returning one of them blames the root for missing
+        # every field, an error no retry can act on.
+        raw = (
+            '{"reviewer": "x", "findings": [{"id": "X-001", "location": {"page": 1}}, '
+            '{"id": "X-002", "location": {"page": 2}, "precision": "exact"}}, "claim": "c"}], "notes": []}'
+        )
+        self.assertIsNone(extract_json_object(raw))
+        message = json_reply_error(raw)
+        self.assertIn("not valid JSON", message)
+        self.assertIn("at character", message)
 
 
 class SchemaHandling(unittest.TestCase):

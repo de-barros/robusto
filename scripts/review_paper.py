@@ -289,6 +289,8 @@ def start_reviewer(
     output_path = reviews_dir / reviewer.output
     stdout_path = log_dir / f"{reviewer.name}.stdout.log"
     stderr_path = log_dir / f"{reviewer.name}.stderr.log"
+    # Calibration runs log to their own work directory, which nothing else creates.
+    log_dir.mkdir(parents=True, exist_ok=True)
     prompt_text = prompt_path.read_text(encoding="utf-8")
 
     command = model_exec_command(

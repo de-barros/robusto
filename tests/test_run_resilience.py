@@ -324,5 +324,26 @@ class EditorPassUsesStdoutAndRepairsOnce(unittest.TestCase):
             self.run_pass([["stray identifier in body"], ["stray identifier in body"]])
 
 
+class ReviewerLogsNeedNoPreparedFolder(unittest.TestCase):
+    def test_start_reviewer_creates_its_log_folder(self) -> None:
+        # Calibration runs log under their own work directory, which nothing
+        # else creates; the first reviewer there failed on the missing folder.
+        tmp = Path(tempfile.mkdtemp(prefix="robusto-logs-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        prompts = tmp / "prompts"
+        prompts.mkdir()
+        reviewer = reviewer_config()
+        (prompts / reviewer.prompt).write_text("prompt", encoding="utf-8")
+        logs = tmp / "calibration" / "logs"
+        process = mock.Mock()
+        with mock.patch.object(review_paper.subprocess, "Popen", return_value=process), mock.patch.object(
+            review_paper, "model_exec_command", lambda **kw: ["claude", "-p"]
+        ):
+            review_paper.start_reviewer(reviewer, tmp, prompts, tmp / "reviews", SCHEMA, logs)
+        process._reviewer_stdout_handle.close()
+        process._reviewer_stderr_handle.close()
+        self.assertTrue((logs / f"{reviewer.name}.stderr.log").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
