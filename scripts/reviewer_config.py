@@ -10,6 +10,7 @@ VALID_NORMALIZATION_ROLES = {"manuscript", "crossref", "reference", "copyedit"}
 VALID_REVIEWER_STAGES = {"preflight", "review"}
 VALID_SELECTION_POLICIES = {"mandatory", "optional"}
 VALID_MODEL_TIERS = {"standard", "light"}
+VALID_MANUSCRIPT_TYPES = ("paper", "registered_report")
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class ReviewerConfig:
     stage: str
     selection_policy: str
     model_tier: str = "standard"
+    manuscript_types: tuple[str, ...] = VALID_MANUSCRIPT_TYPES
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -37,6 +39,7 @@ class ReviewerConfig:
             "stage": self.stage,
             "selection_policy": self.selection_policy,
             "model_tier": self.model_tier,
+            "manuscript_types": list(self.manuscript_types),
         }
 
 
@@ -95,6 +98,14 @@ def load_reviewers_config(path: Path | str | None = None, *, enabled_only: bool 
             valid = ", ".join(sorted(VALID_MODEL_TIERS))
             raise ValueError(f"reviewers[{index}].model_tier must be one of: {valid}")
         model_tier = model_tier.strip()
+        manuscript_types = item.get("manuscript_types", list(VALID_MANUSCRIPT_TYPES))
+        if (
+            not isinstance(manuscript_types, list)
+            or not manuscript_types
+            or any(kind not in VALID_MANUSCRIPT_TYPES for kind in manuscript_types)
+        ):
+            valid = ", ".join(VALID_MANUSCRIPT_TYPES)
+            raise ValueError(f"reviewers[{index}].manuscript_types must be a non-empty list drawn from: {valid}")
         search = item.get("search", False)
         enabled = item.get("enabled", True)
         if not isinstance(search, bool):
@@ -125,6 +136,7 @@ def load_reviewers_config(path: Path | str | None = None, *, enabled_only: bool 
                 stage=stage,
                 selection_policy=selection_policy,
                 model_tier=model_tier,
+                manuscript_types=tuple(manuscript_types),
             )
         )
 
@@ -133,6 +145,15 @@ def load_reviewers_config(path: Path | str | None = None, *, enabled_only: bool 
     if not parsed:
         raise ValueError(f"{config_path} has no enabled reviewers")
     return parsed
+
+
+def reviewers_for_manuscript(
+    reviewers: list[ReviewerConfig], manuscript_type: str
+) -> list[ReviewerConfig]:
+    """The reviewers whose remit applies to this kind of manuscript."""
+    if manuscript_type not in VALID_MANUSCRIPT_TYPES:
+        raise ValueError(f"unknown manuscript type: {manuscript_type}")
+    return [reviewer for reviewer in reviewers if manuscript_type in reviewer.manuscript_types]
 
 
 def write_reviewers_config(path: Path | str, reviewers: list[ReviewerConfig]) -> None:

@@ -33,11 +33,17 @@ from claude_backend import (
     retry_prompt,
     structured_prompt,
 )
-from reviewer_config import ReviewerConfig, load_reviewers_config, write_reviewers_config
+from reviewer_config import (
+    ReviewerConfig,
+    load_reviewers_config,
+    reviewers_for_manuscript,
+    write_reviewers_config,
+)
 from validate_review_json import is_cannot_verify, semantic_errors
 
 
 SELECTOR_TEMPLATE = "reviewer_selection.txt"
+MANUSCRIPT_NOTE_TEMPLATES = {"registered_report": "manuscript_registered_report.txt"}
 SELECTOR_OUTPUT = "reviewer_selection.json"
 MIN_EDITOR_REPORT_CHARS = 2000
 REASONING_EFFORT_CHOICES = ("none", "low", "medium", "high", "xhigh", "max")
@@ -761,6 +767,7 @@ def render_selector_prompt(
     parsed_dir: Path,
     optional_reviewers: list[ReviewerConfig],
     selection_schema_path: Path,
+    manuscript_type: str = "paper",
 ) -> str:
     template = (repo / "prompts" / "templates" / SELECTOR_TEMPLATE).read_text(encoding="utf-8")
     catalog = json.dumps(reviewer_catalog(optional_reviewers), indent=2)
@@ -773,6 +780,10 @@ def render_selector_prompt(
             "optional_reviewer_catalog": catalog,
         },
     )
+    note = MANUSCRIPT_NOTE_TEMPLATES.get(manuscript_type)
+    if note:
+        note_text = (repo / "prompts" / "templates" / note).read_text(encoding="utf-8").strip()
+        rendered = rendered.rstrip() + "\n\n" + note_text + "\n"
     return rendered
 
 
@@ -787,6 +798,7 @@ def run_reviewer_selector(
     model: str | None = None,
     reasoning_effort: str | None = None,
     timeout_seconds: float | None = None,
+    manuscript_type: str = "paper",
 ) -> tuple[dict, float]:
     selection_dir.mkdir(parents=True, exist_ok=True)
     output_path = selection_dir / SELECTOR_OUTPUT
@@ -796,6 +808,7 @@ def run_reviewer_selector(
         parsed_dir,
         optional_reviewers,
         selection_schema_path,
+        manuscript_type,
     )
     started_at = time.time() - 1.0
     run_required(
@@ -965,6 +978,7 @@ def render_prompts_command(
     prompts_dir: Path,
     reviewers_config: str,
     repo: Path,
+    manuscript_type: str = "paper",
 ) -> list[str]:
     command = [
         sys.executable,
@@ -981,6 +995,8 @@ def render_prompts_command(
         str(prompts_dir.relative_to(repo)),
         "--reviewers-config",
         reviewers_config,
+        "--manuscript-type",
+        manuscript_type,
     ]
     return command
 
@@ -1038,6 +1054,7 @@ def run_calibration(
     max_parallel: int,
     timeout_seconds: float | None,
     seed: int,
+    manuscript_type: str = "paper",
 ) -> dict:
     """Seed known defects into a copy of the parse and see if the panel finds them.
 
@@ -1085,6 +1102,7 @@ def run_calibration(
             prompts_dir=calibration_paths.prompts_dir,
             reviewers_config=relative_config,
             repo=repo,
+            manuscript_type=manuscript_type,
         ),
         repo,
         log_dir,
@@ -1239,6 +1257,16 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--manuscript-type",
+        choices=("paper", "registered-report"),
+        default="paper",
+        help=(
+            "registered-report reviews a Stage 1 Registered Report, a protocol without results: "
+            "results-only auditors are skipped, a registered-report auditor is added, and every "
+            "agent and the editor are told that the absence of results is by design."
+        ),
+    )
+    parser.add_argument(
         "--light-model",
         default=None,
         help=(
@@ -1329,7 +1357,10 @@ def main() -> int:
     bundle_path = paths.bundle_path
     editor_input_path = paths.editor_input_path
     reviewers_config_path = repo / args.reviewers_config if not Path(args.reviewers_config).is_absolute() else Path(args.reviewers_config)
-    reviewers = load_reviewers_config(reviewers_config_path)
+    manuscript_type = args.manuscript_type.replace("-", "_")
+    reviewers = reviewers_for_manuscript(
+        load_reviewers_config(reviewers_config_path), manuscript_type
+    )
     preflight_reviewers = [reviewer for reviewer in reviewers if reviewer.stage == "preflight"]
     standard_reviewers = [reviewer for reviewer in reviewers if reviewer.stage == "review"]
     mandatory_reviewers = [
@@ -1388,6 +1419,7 @@ def main() -> int:
         "source_pdf_sha256": source_pdf_sha256,
         "model": effective_model,
         "models": models,
+        "manuscript_type": manuscript_type,
         "backend": backend,
         "reviewer_editor_reasoning_effort": effective_reasoning,
         "preflight_reasoning_effort": args.preflight_reasoning_effort,
@@ -1409,6 +1441,8 @@ def main() -> int:
 
     print(f"[paper] {paper_id}")
     print(f"[mode] {input_mode}")
+    if manuscript_type != "paper":
+        print(f"[manuscript] {manuscript_type}: Stage 1 framing for every agent; results-only auditors skipped")
     print(f"[input] {pdf_path}")
     print(
         f"[model] {models['standard'] or 'Claude Code default'}"
@@ -1450,6 +1484,7 @@ def main() -> int:
             prompts_dir=prompts_dir,
             reviewers_config=str((repo / args.reviewers_config).relative_to(repo) if not Path(args.reviewers_config).is_absolute() else args.reviewers_config),
             repo=repo,
+            manuscript_type=manuscript_type,
         ),
         repo,
         log_dir,
@@ -1526,6 +1561,7 @@ def main() -> int:
         models["light"],
         args.selector_reasoning_effort,
         args.selector_timeout_minutes * 60,
+        manuscript_type,
     )
     selection_errors = validate_selection_output(
         selection,
@@ -1569,6 +1605,7 @@ def main() -> int:
             prompts_dir=prompts_dir,
             reviewers_config=active_reviewers_config,
             repo=repo,
+            manuscript_type=manuscript_type,
         ),
         repo,
         log_dir,
@@ -1664,6 +1701,7 @@ def main() -> int:
                     prompts_dir=prompts_dir,
                     reviewers_config=active_reviewers_config,
                     repo=repo,
+                    manuscript_type=manuscript_type,
                 ),
                 repo,
                 log_dir,
@@ -1748,6 +1786,7 @@ def main() -> int:
                 args.max_parallel_reviewers,
                 args.agent_timeout_minutes * 60,
                 args.calibration_seed,
+                manuscript_type,
             )
         except Exception as exc:  # noqa: BLE001 - a failed measurement is not a failed run
             print(f"[calibration] skipped after an error: {exc}")

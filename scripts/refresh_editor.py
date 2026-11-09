@@ -35,6 +35,16 @@ def run_command(command: list[str], cwd: Path, *, input_text: str | None = None)
         raise RuntimeError(f"Command failed with exit code {completed.returncode}: {' '.join(command)}")
 
 
+def run_manuscript_type(manifest_path: Path) -> str:
+    """The manuscript type the run was started with, so a refresh keeps its framing."""
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "paper"
+    kind = manifest.get("manuscript_type")
+    return kind if kind in ("paper", "registered_report") else "paper"
+
+
 def validated_editor_roster(
     selected: list, reviews_dir: Path, repo: Path, *, strict: bool
 ) -> tuple[list, dict[str, str]]:
@@ -235,6 +245,8 @@ def main() -> int:
             str(bundle.relative_to(repo)),
             "--reviewers-config",
             roster_relative,
+            "--manuscript-type",
+            run_manuscript_type(paths.run_manifest_path),
         ],
         repo,
     )

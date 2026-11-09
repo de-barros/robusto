@@ -288,6 +288,7 @@ class ReviewerConfigTests(unittest.TestCase):
                 "power_multiple_testing_auditor",
                 "design_randomization_auditor",
                 "economic_magnitude_auditor",
+                "registered_report_auditor",
                 "devils_advocate_auditor",
             ],
         )

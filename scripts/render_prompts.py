@@ -8,6 +8,9 @@ from reviewer_config import load_reviewers_config
 
 EDITOR_TEMPLATE = "editor_report.txt"
 REVIEWER_CONTRACT_TEMPLATE = "reviewer_contract.txt"
+# Appended for a Stage 1 Registered Report: to each reviewer prompt, and to the editor prompt.
+MANUSCRIPT_NOTE_TEMPLATES = {"registered_report": "manuscript_registered_report.txt"}
+EDITOR_NOTE_TEMPLATES = {"registered_report": "editor_registered_report.txt"}
 
 PLACEHOLDER_RE = re.compile(r"\{[a-zA-Z_][a-zA-Z0-9_]*\}")
 
@@ -30,6 +33,12 @@ def main() -> int:
     parser.add_argument("--templates-dir", default="prompts/templates")
     parser.add_argument("--editor-bundle-path", default=None)
     parser.add_argument("--reviewers-config", default="config/reviewers.json")
+    parser.add_argument(
+        "--manuscript-type",
+        choices=("paper", "registered_report"),
+        default="paper",
+        help="registered_report adds the Stage 1 framing to every reviewer prompt and the editor prompt.",
+    )
     args = parser.parse_args()
 
     templates_dir = Path(args.templates_dir)
@@ -58,11 +67,18 @@ def main() -> int:
     reviewer_contract = render_template(
         (templates_dir / REVIEWER_CONTRACT_TEMPLATE).read_text(encoding="utf-8"), values
     )
+    manuscript_note = ""
+    editor_note = ""
+    if args.manuscript_type in MANUSCRIPT_NOTE_TEMPLATES:
+        manuscript_note = (templates_dir / MANUSCRIPT_NOTE_TEMPLATES[args.manuscript_type]).read_text(encoding="utf-8").strip()
+        editor_note = (templates_dir / EDITOR_NOTE_TEMPLATES[args.manuscript_type]).read_text(encoding="utf-8").strip()
     written = []
     for template_name, reviewer in template_files.items():
         template_path = templates_dir / template_name
         output_path = output_dir / reviewer.prompt
         rendered = render_template(template_path.read_text(encoding="utf-8"), values)
+        if manuscript_note:
+            rendered = rendered.rstrip() + "\n\n" + manuscript_note
         rendered = rendered.rstrip() + "\n\n" + reviewer_contract.strip() + "\n"
         output_path.write_text(rendered, encoding="utf-8")
         written.append(str(output_path))
@@ -70,6 +86,8 @@ def main() -> int:
     editor_template_path = templates_dir / EDITOR_TEMPLATE
     editor_output_path = output_dir / EDITOR_TEMPLATE
     editor_rendered = render_template(editor_template_path.read_text(encoding="utf-8"), values)
+    if editor_note:
+        editor_rendered = editor_rendered.rstrip() + "\n\n" + editor_note + "\n"
     editor_output_path.write_text(editor_rendered, encoding="utf-8")
     written.append(str(editor_output_path))
 

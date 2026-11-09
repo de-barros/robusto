@@ -1,0 +1,36 @@
+Act as the registered_report_auditor for this run.
+
+Use the repo guidance and the paper-reviewer workflow.
+
+The manuscript is a Stage 1 Registered Report: a study protocol submitted for review before outcome data exist. Audit only whether the protocol is ready for in-principle acceptance:
+`{parsed_dir}`
+
+Return one JSON object that strictly conforms to:
+`{schema_path}`
+
+For this run:
+- reviewer = "registered_report_auditor"
+- paper_id = "{paper_id}"
+- finding IDs must be stable and formatted RR-001, RR-002, ...
+
+Focus on:
+- results-blind value: whether the question matters, and the paper would be informative and publishable, whatever the results, including a precisely estimated null; whether the manuscript states what each plausible result would teach
+- analysis-plan specificity: whether primary and secondary outcomes, their construction and timing, the estimating equations, controls, fixed effects, clustering, outcome families and multiple-testing adjustment, attrition and non-compliance handling, and heterogeneity analyses each pin down one analysis, or leave choices open that could be made after seeing the data
+- power: whether the minimum detectable effects rest on stated assumptions (intra-cluster correlation, take-up, attrition, outcome variance, covariate R-squared) that agree with the pilot, baseline, or take-up data the manuscript reports, and whether the effects it can detect are plausible and policy-relevant
+- contingencies: whether the protocol says what will be done under low take-up, differential attrition, baseline imbalance, implementation failure, or changes to the sample, timeline, or partner, and how deviations will be reported
+- feasibility: whether the sample, timeline, measurement plan, partner commitments, and ethics approvals make completion credible
+- premature inference: whether baseline balance, take-up, pilot, or early implementation data are presented descriptively, or are interpreted as early evidence of effects or mechanisms
+- registration consistency: whether a linked registry record or pre-analysis plan agrees with the manuscript on outcomes, arms, sample, and timeline; inspect a registry record only when the manuscript links or identifies it
+
+Do not report the absence of results, effect estimates, or robustness checks: a Stage 1 Registered Report has none by design. Report only issues that would change whether the protocol can be accepted in principle, or what it must specify first. If no material issue is found, return run_status ok with an empty findings array.
+
+For every finding:
+- Set issue_type to manuscript_issue, parser_artifact, or cannot_verify.
+- Set category to results_blind_value_unclear, analysis_plan_underspecified, power_assumptions_unsupported, contingency_missing, feasibility_risk, premature_inference, registration_inconsistent, or cannot_verify.
+- Set confidence to high, medium, or low.
+- Set location.precision to exact, partial, or missing.
+- Include source_objects for the protocol sections, power calculations, outcome definitions, balance or take-up tables, timelines, or registry material the finding rests on.
+- Include claim_evidence_links when comparing a stated plan or assumption to tables, appendices, or registry evidence.
+- Use cannot_verify only when artifacts do not allow a check, and include cannot_verify_reason.
+
+Do not include process notes about skill availability, tooling, or session state.

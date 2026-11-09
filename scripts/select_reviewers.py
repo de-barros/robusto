@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from pipeline_paths import SELECTED_REVIEWERS_CONFIG
-from reviewer_config import load_reviewers_config, write_reviewers_config
+from reviewer_config import load_reviewers_config, reviewers_for_manuscript, write_reviewers_config
 from review_paper import (
     REASONING_EFFORT_CHOICES,
     SELECTOR_OUTPUT,
@@ -28,6 +28,7 @@ def main() -> int:
     parser.add_argument("--selection-dir", required=True)
     parser.add_argument("--log-dir", required=True)
     parser.add_argument("--reviewers-config", default="config/reviewers.json")
+    parser.add_argument("--manuscript-type", choices=("paper", "registered-report"), default="paper")
     parser.add_argument(
         "--model",
         default=None,
@@ -66,7 +67,8 @@ def main() -> int:
     reviewers_config = Path(args.reviewers_config)
     if not reviewers_config.is_absolute():
         reviewers_config = repo / reviewers_config
-    reviewers = load_reviewers_config(reviewers_config)
+    manuscript_type = args.manuscript_type.replace("-", "_")
+    reviewers = reviewers_for_manuscript(load_reviewers_config(reviewers_config), manuscript_type)
     preflight_reviewers = [reviewer for reviewer in reviewers if reviewer.stage == "preflight"]
     standard_reviewers = [reviewer for reviewer in reviewers if reviewer.stage == "review"]
     mandatory_reviewers = [reviewer for reviewer in standard_reviewers if reviewer.selection_policy == "mandatory"]
@@ -83,6 +85,7 @@ def main() -> int:
         resolve_models(project_defaults(repo), light_model=args.model)["light"],
         args.reasoning_effort,
         args.timeout_minutes * 60,
+        manuscript_type,
     )
     errors = validate_selection_output(
         selection,

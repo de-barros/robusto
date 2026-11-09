@@ -155,6 +155,29 @@ class MockPipelineFailure(unittest.TestCase):
         self.assertIn("[ok] numerical_auditor", result.stdout)
 
 
+class MockPipelineRegisteredReport(unittest.TestCase):
+    """A Stage 1 Registered Report swaps the results auditors for the protocol one."""
+
+    def setUp(self) -> None:
+        shutil.rmtree(WORK, ignore_errors=True)
+        shutil.rmtree(OUTPUTS, ignore_errors=True)
+
+    tearDown = setUp
+
+    def test_roster_and_framing(self) -> None:
+        result = run_pipeline("--manuscript-type", "registered-report", "--stop-after", "selection")
+        self.assertEqual(result.returncode, 0, result.stdout[-2000:] + result.stderr[-2000:])
+        self.assertIn("[manuscript] registered_report", result.stdout)
+        roster = next(line for line in result.stdout.splitlines() if line.startswith("[selection]"))
+        self.assertIn("registered_report_auditor", roster)
+        self.assertNotIn("claim_evidence_auditor", roster)
+        self.assertNotIn("robustness_auditor", roster)
+        run = json.loads((WORK / "run_manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(run["manuscript_type"], "registered_report")
+        prompt = (WORK / "prompts" / "registered_report_audit.txt").read_text(encoding="utf-8")
+        self.assertIn("Manuscript type: Stage 1 Registered Report.", prompt)
+
+
 class MockPipelineStopAfter(unittest.TestCase):
     """Stopping early is how a first real run is made cheap.
 

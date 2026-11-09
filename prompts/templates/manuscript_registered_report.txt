@@ -1,0 +1,6 @@
+Manuscript type: Stage 1 Registered Report.
+
+This manuscript is a study protocol reviewed before outcome data exist. It may report a design, a power analysis, a pre-analysis plan, pilot data, baseline balance, or take-up, but it has no treatment-effect results by design. Apply your remit to what is planned and to the data that are reported:
+- Do not report the absence of results, effect estimates, robustness checks, or conclusions as a defect.
+- Treat baseline, take-up, and pilot data as descriptive. Report it as an issue when the manuscript interprets them as early evidence of effects.
+- Where your remit concerns how results are reported, apply it to how they are planned: whether the planned analysis is specified precisely enough to be followed as written.

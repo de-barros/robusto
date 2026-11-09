@@ -51,7 +51,10 @@
       "search": false,
       "enabled": true,
       "normalization_role": "manuscript",
-      "selection_policy": "mandatory"
+      "selection_policy": "mandatory",
+      "manuscript_types": [
+        "paper"
+      ]
     },
     {
       "name": "literature_auditor",
@@ -103,7 +106,10 @@
       "search": false,
       "enabled": true,
       "normalization_role": "manuscript",
-      "selection_policy": "optional"
+      "selection_policy": "optional",
+      "manuscript_types": [
+        "paper"
+      ]
     },
     {
       "name": "sample_construction_auditor",
@@ -123,7 +129,10 @@
       "search": false,
       "enabled": true,
       "normalization_role": "manuscript",
-      "selection_policy": "mandatory"
+      "selection_policy": "mandatory",
+      "manuscript_types": [
+        "paper"
+      ]
     },
     {
       "name": "limitations_external_validity_auditor",
@@ -163,7 +172,10 @@
       "search": true,
       "enabled": true,
       "normalization_role": "manuscript",
-      "selection_policy": "optional"
+      "selection_policy": "optional",
+      "manuscript_types": [
+        "paper"
+      ]
     },
     {
       "name": "institutional_context_auditor",
@@ -203,7 +215,23 @@
       "search": false,
       "enabled": true,
       "normalization_role": "manuscript",
-      "selection_policy": "optional"
+      "selection_policy": "optional",
+      "manuscript_types": [
+        "paper"
+      ]
+    },
+    {
+      "name": "registered_report_auditor",
+      "prompt": "registered_report_audit.txt",
+      "output": "registered_report_auditor.json",
+      "id_prefix": "RR",
+      "search": true,
+      "enabled": true,
+      "normalization_role": "manuscript",
+      "selection_policy": "mandatory",
+      "manuscript_types": [
+        "registered_report"
+      ]
     },
     {
       "name": "devils_advocate_auditor",

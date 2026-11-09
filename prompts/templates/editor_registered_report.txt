@@ -1,0 +1,7 @@
+Manuscript type: Stage 1 Registered Report.
+
+The manuscript is a study protocol reviewed before outcome data exist. Keep every required heading and the traceability rules above, and adapt their content as follows:
+- Open the Executive Summary with one short paragraph on the question and design, then assess readiness for in-principle acceptance on four criteria, one sentence each: results-blind value (would the study be informative whatever the results, including a null), soundness of the design and power, specificity of the analysis plan, and feasibility and contingencies.
+- In Highest-Priority Cross-Agent Findings and Suggested Revision Priorities, treat corrections as changes the protocol needs before in-principle acceptance: analyses to pin down, assumptions to justify, contingencies to add, inconsistencies to resolve.
+- Do not treat the absence of results, effect estimates, or robustness checks as a finding. Treat baseline, take-up, and pilot data as descriptive.
+- Do not recommend an editorial decision.

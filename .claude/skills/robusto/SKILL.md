@@ -119,6 +119,19 @@ report them, at a cost of three or four extra calls. Result at
 silence in that class is unmeasured rather than clean. `--no-calibration` skips
 it.
 
+**Registered Reports.** For a Stage 1 Registered Report (a protocol reviewed
+before results exist, for example at the Journal of Development Economics), add
+`--manuscript-type registered-report`. The five auditors that need results are
+skipped (claim-evidence, abstract-conclusion consistency, robustness, economic
+magnitude, data availability and replication). A `registered_report_auditor`
+checks results-blind value, analysis-plan specificity, power assumptions
+against any pilot, baseline or take-up data, contingencies, feasibility,
+premature inference from baseline data, and consistency with the registry.
+Every other agent, the selector and the editor are told that the absence of
+results is by design; the editor frames its report around readiness for
+in-principle acceptance, under the usual headings. Ask whether a manuscript is
+a Registered Report when it reads like a protocol and the user has not said.
+
 A full run takes a long time and makes many model calls. Say so before starting, and
 do not begin a run the user has not asked for.
 
