@@ -4,6 +4,16 @@
 # control, so that key is deliberately absent rather than carried over as a
 # setting that would silently do nothing.
 
-# Model used by the reviewer panel, the selector, and the editor.
-# Any model id the Claude Code CLI accepts is valid.
-model = "claude-opus-5"
+# Two model tiers. Any model id the Claude Code CLI accepts is valid.
+#
+# model:       the substantive auditors, the devil's advocate, and the editor,
+#              where a missed inconsistency is the costly error.
+# light_model: the reviewers marked "model_tier": "light" in
+#              config/reviewers.json (parser quality, cross-references,
+#              references, grammar) and the reviewer selector, whose work is
+#              mechanical.
+#
+# --model and --light-model override these; pass the same id to both to run
+# every agent on one model.
+model = "claude-opus-5-5"
+light_model = "claude-sonnet-5-5"

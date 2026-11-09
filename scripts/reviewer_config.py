@@ -9,6 +9,7 @@ from typing import Any
 VALID_NORMALIZATION_ROLES = {"manuscript", "crossref", "reference", "copyedit"}
 VALID_REVIEWER_STAGES = {"preflight", "review"}
 VALID_SELECTION_POLICIES = {"mandatory", "optional"}
+VALID_MODEL_TIERS = {"standard", "light"}
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,7 @@ class ReviewerConfig:
     normalization_role: str
     stage: str
     selection_policy: str
+    model_tier: str = "standard"
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -34,6 +36,7 @@ class ReviewerConfig:
             "normalization_role": self.normalization_role,
             "stage": self.stage,
             "selection_policy": self.selection_policy,
+            "model_tier": self.model_tier,
         }
 
 
@@ -87,6 +90,11 @@ def load_reviewers_config(path: Path | str | None = None, *, enabled_only: bool 
         if selection_policy not in VALID_SELECTION_POLICIES:
             valid = ", ".join(sorted(VALID_SELECTION_POLICIES))
             raise ValueError(f"reviewers[{index}].selection_policy must be one of: {valid}")
+        model_tier = item.get("model_tier", "standard")
+        if not isinstance(model_tier, str) or model_tier.strip() not in VALID_MODEL_TIERS:
+            valid = ", ".join(sorted(VALID_MODEL_TIERS))
+            raise ValueError(f"reviewers[{index}].model_tier must be one of: {valid}")
+        model_tier = model_tier.strip()
         search = item.get("search", False)
         enabled = item.get("enabled", True)
         if not isinstance(search, bool):
@@ -116,6 +124,7 @@ def load_reviewers_config(path: Path | str | None = None, *, enabled_only: bool 
                 normalization_role=role,
                 stage=stage,
                 selection_policy=selection_policy,
+                model_tier=model_tier,
             )
         )
 

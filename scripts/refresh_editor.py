@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from pipeline_paths import paper_run_paths
-from review_paper import enforce_preflight_gate, run_editor_pass
+from review_paper import enforce_preflight_gate, project_defaults, resolve_models, run_editor_pass
 from reviewer_config import load_reviewers_config, write_reviewers_config
 
 
@@ -268,7 +268,7 @@ def main() -> int:
             editor_input_path=editor_input,
             report_path=report,
             bundle_path=bundle,
-            model=args.model,
+            model=resolve_models(project_defaults(repo), args.model)["standard"],
             reasoning_effort=args.reasoning_effort,
             timeout_seconds=args.agent_timeout_minutes * 60,
         )

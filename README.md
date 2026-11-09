@@ -382,13 +382,19 @@ call rather than a second editor run.
 Reviewers run with `Read`, `Grep`, `Glob` and optionally `WebSearch`. No write
 tool is ever granted, which the test suite asserts.
 
+Agents run on one of two model tiers set in `config/defaults.toml`: `model`
+(Opus 5.5) for the substantive auditors and the editor, and `light_model`
+(Sonnet 5.5) for the reviewer selector and the four mechanical auditors marked
+`"model_tier": "light"` in `config/reviewers.json`. `--model` and
+`--light-model` override them.
+
 `--reasoning-effort` is accepted so existing scripts and habits carry over, but
 Claude Code has no such control, so it is ignored rather than translated into
 something it does not mean.
 
 ## Status
 
-305 passing tests, run on Linux and Windows in CI: the upstream suite, the
+314 passing tests, run on Linux and Windows in CI: the upstream suite, the
 schema-contract layer, the LaTeX source front-end, the environment and
 authentication checks, the mock backend, and an end-to-end pipeline run on a
 fixture manuscript.

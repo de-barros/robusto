@@ -9,7 +9,8 @@
       "enabled": true,
       "normalization_role": "manuscript",
       "stage": "preflight",
-      "selection_policy": "mandatory"
+      "selection_policy": "mandatory",
+      "model_tier": "light"
     },
     {
       "name": "crossref_auditor",
@@ -19,7 +20,8 @@
       "search": false,
       "enabled": true,
       "normalization_role": "crossref",
-      "selection_policy": "mandatory"
+      "selection_policy": "mandatory",
+      "model_tier": "light"
     },
     {
       "name": "source_consistency_auditor",
@@ -69,7 +71,8 @@
       "search": true,
       "enabled": true,
       "normalization_role": "reference",
-      "selection_policy": "mandatory"
+      "selection_policy": "mandatory",
+      "model_tier": "light"
     },
     {
       "name": "grammar_auditor",
@@ -79,7 +82,8 @@
       "search": false,
       "enabled": true,
       "normalization_role": "copyedit",
-      "selection_policy": "mandatory"
+      "selection_policy": "mandatory",
+      "model_tier": "light"
     },
     {
       "name": "identification_auditor",

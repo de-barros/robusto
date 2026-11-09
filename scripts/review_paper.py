@@ -125,6 +125,28 @@ def project_defaults(repo: Path) -> dict[str, object]:
         return tomllib.load(handle)
 
 
+def resolve_models(
+    defaults: dict[str, object], model: str | None = None, light_model: str | None = None
+) -> dict[str, str | None]:
+    """Map each model tier to the id its agents run on.
+
+    The standard tier serves the substantive auditors and the editor; the light
+    tier serves the mechanical auditors and the selector. Command-line values
+    win over config/defaults.toml, and the light tier falls back to the
+    standard model when neither names one. None means the CLI's own default.
+    """
+    standard = model or defaults.get("model") or None
+    light = light_model or defaults.get("light_model") or standard
+    return {"standard": standard, "light": light}  # type: ignore[dict-item]
+
+
+def model_for(reviewer: ReviewerConfig, model: str | dict[str, str | None] | None) -> str | None:
+    """The model a reviewer runs on: its tier's entry when given a tier map."""
+    if isinstance(model, dict):
+        return model.get(reviewer.model_tier) or model.get("standard")
+    return model
+
+
 def git_metadata(repo: Path) -> dict[str, object]:
     try:
         commit = subprocess.run(
@@ -893,7 +915,7 @@ def run_reviewer_batch(
     reviews_dir: Path,
     schema_path: Path,
     log_dir: Path,
-    model: str | None = None,
+    model: str | dict[str, str | None] | None = None,
     reasoning_effort: str | None = None,
     max_parallel: int = 4,
     timeout_seconds: float | None = None,
@@ -917,7 +939,7 @@ def run_reviewer_batch(
                 reviews_dir,
                 schema_path.relative_to(repo),
                 log_dir,
-                model,
+                model_for(reviewer, model),
                 reasoning_effort,
             )
             for reviewer in batch
@@ -1011,7 +1033,7 @@ def run_calibration(
     schema_path: Path,
     outputs_dir: Path,
     log_dir: Path,
-    model: str | None,
+    model: str | dict[str, str | None] | None,
     reasoning_effort: str | None,
     max_parallel: int,
     timeout_seconds: float | None,
@@ -1212,8 +1234,18 @@ def main() -> int:
         "--model",
         default=None,
         help=(
-            "Override the Claude model used by all agents, e.g. claude-opus-5. "
-            "The default comes from config/defaults.toml."
+            "Model for the standard tier: substantive auditors and the editor, e.g. "
+            "claude-opus-5-5. The default comes from config/defaults.toml."
+        ),
+    )
+    parser.add_argument(
+        "--light-model",
+        default=None,
+        help=(
+            "Model for the light tier: the mechanical auditors marked model_tier "
+            "'light' in config/reviewers.json and the reviewer selector, e.g. "
+            "claude-sonnet-5-5. The default comes from config/defaults.toml. Pass the "
+            "same id as --model to run every agent on one model."
         ),
     )
     parser.add_argument(
@@ -1309,7 +1341,8 @@ def main() -> int:
     selected_reviewers_config_path = paths.selected_reviewers_config_path
 
     defaults = project_defaults(repo)
-    effective_model = args.model or defaults.get("model")
+    models = resolve_models(defaults, args.model, args.light_model)
+    effective_model = models["standard"]
     effective_reasoning = args.reasoning_effort or defaults.get("model_reasoning_effort")
     # In source mode the root file is a poor fingerprint: the manuscript is
     # mostly input files, so hash what the parse actually read.
@@ -1354,6 +1387,7 @@ def main() -> int:
         "source_pdf": str(pdf_path.relative_to(repo) if repo in pdf_path.parents else pdf_path),
         "source_pdf_sha256": source_pdf_sha256,
         "model": effective_model,
+        "models": models,
         "backend": backend,
         "reviewer_editor_reasoning_effort": effective_reasoning,
         "preflight_reasoning_effort": args.preflight_reasoning_effort,
@@ -1376,7 +1410,10 @@ def main() -> int:
     print(f"[paper] {paper_id}")
     print(f"[mode] {input_mode}")
     print(f"[input] {pdf_path}")
-    print(f"[model] {effective_model or 'Claude Code default'}")
+    print(
+        f"[model] {models['standard'] or 'Claude Code default'}"
+        f" (light tier: {models['light'] or 'Claude Code default'})"
+    )
     if backend == "mock":
         print("[backend] mock: synthetic replies, no model calls, no tokens; the report will say so")
     else:
@@ -1446,7 +1483,7 @@ def main() -> int:
             reviews_dir,
             schema_path,
             log_dir,
-            args.model,
+            models,
             args.preflight_reasoning_effort,
             args.max_parallel_reviewers,
             args.agent_timeout_minutes * 60,
@@ -1486,7 +1523,7 @@ def main() -> int:
         selection_dir,
         selection_schema_path,
         log_dir,
-        args.model,
+        models["light"],
         args.selector_reasoning_effort,
         args.selector_timeout_minutes * 60,
     )
@@ -1562,7 +1599,7 @@ def main() -> int:
         reviews_dir,
         schema_path,
         log_dir,
-        args.model,
+        models,
         args.reasoning_effort,
         args.max_parallel_reviewers,
         args.agent_timeout_minutes * 60,
@@ -1678,7 +1715,7 @@ def main() -> int:
         editor_input_path=editor_input_path,
         report_path=report_path,
         bundle_path=bundle_path,
-        model=args.model,
+        model=models["standard"],
         reasoning_effort=args.reasoning_effort,
         timeout_seconds=args.agent_timeout_minutes * 60,
     )
@@ -1706,7 +1743,7 @@ def main() -> int:
                 schema_path,
                 outputs_dir,
                 log_dir,
-                args.model,
+                models,
                 args.reasoning_effort,
                 args.max_parallel_reviewers,
                 args.agent_timeout_minutes * 60,

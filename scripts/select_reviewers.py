@@ -10,6 +10,8 @@ from review_paper import (
     REASONING_EFFORT_CHOICES,
     SELECTOR_OUTPUT,
     enforce_conservative_applicability,
+    project_defaults,
+    resolve_models,
     run_reviewer_selector,
     selected_reviewers_from_selection,
     validate_selection_output,
@@ -31,7 +33,7 @@ def main() -> int:
         default=None,
         help=(
             "Advanced testing override for the applicability router model. "
-            "The default comes from config/defaults.toml."
+            "The default is light_model in config/defaults.toml."
         ),
     )
     parser.add_argument(
@@ -78,7 +80,7 @@ def main() -> int:
         selection_dir,
         repo / "schemas" / "reviewer_selection.schema.json",
         log_dir,
-        args.model,
+        resolve_models(project_defaults(repo), light_model=args.model)["light"],
         args.reasoning_effort,
         args.timeout_minutes * 60,
     )

@@ -90,7 +90,14 @@ Add `--paper-id <id>` when the filename is not the identifier you want. The id
 is slugified (lowercase, runs of other characters become `-`), so
 `My_Paper v2` becomes `my-paper-v2`; the first line of the run, `[paper] ...`,
 prints the id actually used, and every later path and command takes that one.
-Add `--model <id>` to override `config/defaults.toml`.
+Models come in two tiers, set in `config/defaults.toml`. The substantive
+auditors, the devil's advocate and the editor run on `model` (Opus 5.5 by
+default), where a missed inconsistency is the costly error. The mechanical
+auditors marked `"model_tier": "light"` in `config/reviewers.json` (parser
+quality, cross-references, references, grammar) and the reviewer selector run
+on `light_model` (Sonnet 5.5). `--model <id>` and `--light-model <id>` override
+each tier; pass the same id to both to run everything on one model. The first
+lines of a run print both.
 
 Add `--backend mock` to run the entire pipeline with no model calls. Every
 reply is synthetic and the report says so on its first line; the point is to
